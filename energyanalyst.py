@@ -228,7 +228,8 @@ def compute_technical_indicators(df):
     return out
 
 def run_prophet_forecast(df, periods=30):
-    df_prophet = df.reset_index()[["Date", "Close"]]
+    # df expected to have columns: Date, Close
+    df_prophet = df[["Date", "Close"]].copy()
     df_prophet.columns = ["ds", "y"]
 
     model = Prophet(daily_seasonality=False, weekly_seasonality=True)
@@ -394,52 +395,61 @@ if section == "Prices":
         if df.empty:
             st.warning("No data available for this ticker.")
         else:
-            df = df.reset_index()
-            df_ta = compute_technical_indicators(df)
-
-            st.markdown("### Price with Moving Averages")
-            fig_ma = px.line(
-                df_ta,
-                x="Date",
-                y=["Close", "SMA_20", "SMA_50", "EMA_20", "EMA_50"],
-                title=f"{label_map[ticker]} — Price & Moving Averages"
-            )
-            st.plotly_chart(fig_ma, use_container_width=True)
-
-            st.markdown("### Relative Strength Index (RSI)")
-            fig_rsi = px.line(
-                df_ta,
-                x="Date",
-                y="RSI_14",
-                title=f"{label_map[ticker]} — RSI (14)"
-            )
-            fig_rsi.add_hrect(y0=30, y1=70, fillcolor="lightgray", opacity=0.2)
-            st.plotly_chart(fig_rsi, use_container_width=True)
-
-            st.markdown("### MACD")
-            fig_macd = px.line(
-                df_ta,
-                x="Date",
-                y=["MACD", "MACD_signal"],
-                title=f"{label_map[ticker]} — MACD (12–26–9)"
-            )
-            st.plotly_chart(fig_macd, use_container_width=True)
-
-            st.markdown("### Forecast (Prophet)")
-            forecast = run_prophet_forecast(df)
-            fig_fc = px.line(
-                forecast,
-                x="ds",
-                y=["yhat", "yhat_lower", "yhat_upper"],
-                title=f"{label_map[ticker]} — 30‑Day Forecast (Prophet)"
-            )
-            st.plotly_chart(fig_fc, use_container_width=True)
-
-            st.markdown("### Term Structure (Placeholder)")
-            if ticker in ["CL=F", "BZ=F", "NG=F", "RB=F", "HO=F"]:
-                st.info("Term structure for individual futures curves will be added here (per‑contract strip) in a later iteration.")
+            # Standardize column names and reset index
+            df = df.rename(columns=str.title)  # 'close' -> 'Close'
+            if "Close" not in df.columns:
+                st.error("Downloaded data does not contain a 'Close' column.")
             else:
-                st.info("Term structure only applies to futures contracts.")
+                df = df.reset_index()  # Date column
+
+                df_ta = compute_technical_indicators(df)
+
+                st.markdown("### Price with Moving Averages")
+                fig_ma = px.line(
+                    df_ta,
+                    x="Date",
+                    y=["Close", "SMA_20", "SMA_50", "EMA_20", "EMA_50"],
+                    title=f"{label_map[ticker]} — Price & Moving Averages"
+                )
+                st.plotly_chart(fig_ma, use_container_width=True)
+
+                st.markdown("### Relative Strength Index (RSI)")
+                fig_rsi = px.line(
+                    df_ta,
+                    x="Date",
+                    y="RSI_14",
+                    title=f"{label_map[ticker]} — RSI (14)"
+                )
+                fig_rsi.add_hrect(y0=30, y1=70, fillcolor="lightgray", opacity=0.2)
+                st.plotly_chart(fig_rsi, use_container_width=True)
+
+                st.markdown("### MACD")
+                fig_macd = px.line(
+                    df_ta,
+                    x="Date",
+                    y=["MACD", "MACD_signal"],
+                    title=f"{label_map[ticker]} — MACD (12–26–9)"
+                )
+                st.plotly_chart(fig_macd, use_container_width=True)
+
+                st.markdown("### Forecast (Prophet)")
+                try:
+                    forecast = run_prophet_forecast(df)
+                    fig_fc = px.line(
+                        forecast,
+                        x="ds",
+                        y=["yhat", "yhat_lower", "yhat_upper"],
+                        title=f"{label_map[ticker]} — 30‑Day Forecast (Prophet)"
+                    )
+                    st.plotly_chart(fig_fc, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Prophet failed: {e}")
+
+                st.markdown("### Term Structure (Placeholder)")
+                if ticker in ["CL=F", "BZ=F", "NG=F", "RB=F", "HO=F"]:
+                    st.info("Term structure for futures will be added in a later update.")
+                else:
+                    st.info("Term structure only applies to futures contracts.")
 
 # ---------------------------------------------------------
 # MACRO DRIVERS PAGE (FRED)
@@ -619,4 +629,3 @@ elif section == "Supply & Demand (EIA)":
         For now, this page is a placeholder while the EIA v2 integration is finalized.
         """
     )
-
