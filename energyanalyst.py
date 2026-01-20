@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.express as px
 import seaborn as sns
 import matplotlib.pyplot as plt
+import requests
 from datetime import date, timedelta
 from fredapi import Fred
 
@@ -97,6 +98,25 @@ macro_fx = {
     "GBP/USD": "DEXUSUK",
     "USD/JPY": "DEXJPUS",
     "USD/CNY": "DEXCHUS"
+}
+
+# ---------------------------------------------------------
+# EIA SUPPLY/DEMAND SERIES (CORE OPTION A, US ONLY)
+# ---------------------------------------------------------
+eia_core_series = {
+    # Crude
+    "Crude Production": "PET.WCRFPUS2.W",
+    "Crude Net Imports": "PET.WCRNTUS2.W",
+    "Crude Stocks (Commercial)": "PET.WCESTUS1.W",
+    "SPR Stocks": "PET.WCSSTUS1.W",
+    "Refinery Inputs (Crude Runs)": "PET.WCRRIUS2.W",
+
+    # Total products
+    "Total Products Supplied (Demand)": "PET.WTTSTUS1.W",
+    "Total Stocks (All Products)": "PET.WTTSTUS1.W",  # same ID but interpreted as stocks
+
+    # Refinery utilization
+    "Refinery Utilization": "PET.WPULEUS3.W"
 }
 
 # ---------------------------------------------------------
@@ -200,10 +220,69 @@ def macro_context_table(df):
     return pd.DataFrame(rows, columns=["Series", "Current", "1Y Min", "1Y Max", "1Y Avg"])
 
 # ---------------------------------------------------------
+# HELPERS — EIA (SUPPLY/DEMAND)
+# ---------------------------------------------------------
+def fetch_eia_series(api_key, series_id):
+    url = f"https://api.eia.gov/series/?api_key={api_key}&series_id={series_id}"
+    r = requests.get(url)
+    if r.status_code != 200:
+        return None
+    js = r.json()
+    if "series" not in js or len(js["series"]) == 0:
+        return None
+    data = js["series"][0]["data"]
+    df = pd.DataFrame(data, columns=["date", "value"])
+    df["date"] = pd.to_datetime(df["date"])
+    df.set_index("date", inplace=True)
+    df = df.sort_index()
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    return df["value"]
+
+def load_eia_series_dict(api_key, series_dict, start, end):
+    data = {}
+    for name, sid in series_dict.items():
+        try:
+            s = fetch_eia_series(api_key, sid)
+            if s is None or s.empty:
+                continue
+            s = s[(s.index >= pd.to_datetime(start)) & (s.index <= pd.to_datetime(end))]
+            if s.empty:
+                continue
+            data[name] = s
+        except Exception:
+            continue
+    if not data:
+        return pd.DataFrame()
+    return pd.DataFrame(data)
+
+def eia_context_table(df):
+    rows = []
+    for col in df.columns:
+        series = df[col].dropna()
+        if series.empty:
+            continue
+        current = series.iloc[-1]
+        wow = None
+        if len(series) > 1:
+            wow = current - series.iloc[-2]
+        rows.append([
+            col,
+            round(current, 2),
+            round(wow, 2) if wow is not None else None,
+            round(series.mean(), 2),
+            round(series.min(), 2),
+            round(series.max(), 2)
+        ])
+    return pd.DataFrame(rows, columns=["Series", "Latest", "WoW Change", "Avg", "Min", "Max"])
+
+# ---------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------
 st.sidebar.title("Energy Dashboard MVP")
-section = st.sidebar.radio("Select Section", ["Prices", "Macro Drivers"])
+section = st.sidebar.radio(
+    "Select Section",
+    ["Prices", "Macro Drivers", "Supply & Demand (EIA)"]
+)
 
 st.sidebar.subheader("Date Range")
 default_start = date.today() - timedelta(days=365)
@@ -342,7 +421,6 @@ if section == "Prices":
 elif section == "Macro Drivers":
     st.title("🌍 Macro Drivers")
 
-    # API key input
     st.subheader("FRED API Key")
     fred_key = st.text_input("Enter your FRED API Key", type="password")
 
@@ -356,20 +434,16 @@ elif section == "Macro Drivers":
         st.error("Invalid FRED API key. Please check and try again.")
         st.stop()
 
-    macro_tabs = st.tabs(["Core Macro (Option A)", "Extended Macro (Coming Soon)"])
+    macro_tabs = st.tabs(["Core Macro (Option A)", "Extended Macro (Add‑On)"])
 
     # ---------- CORE MACRO TAB ----------
     with macro_tabs[0]:
         st.subheader("Core Macro — Yields, FX, Policy, Inflation")
 
-        # US yields, Fed Funds, CPI
         df_us = load_fred_series(fred, macro_us, start_date, end_date)
-        # Global yields
         df_global = load_fred_series(fred, macro_global_yields, start_date, end_date)
-        # FX
         df_fx = load_fred_series(fred, macro_fx, start_date, end_date)
 
-        # US Yields & Fed Funds
         st.markdown("### US Rates & Yields")
         if not df_us.empty:
             fig_us = px.line(
@@ -385,7 +459,6 @@ elif section == "Macro Drivers":
         else:
             st.warning("No US macro data available for the selected period.")
 
-        # Global Yields
         st.markdown("### Global 10Y Yields (Germany, France, UK, Japan)")
         if not df_global.empty:
             fig_global = px.line(
@@ -401,7 +474,6 @@ elif section == "Macro Drivers":
         else:
             st.warning("No global yield data available for the selected period.")
 
-        # FX
         st.markdown("### FX — USD Majors (FRED DEX Series)")
         if not df_fx.empty:
             fig_fx = px.line(
@@ -417,7 +489,6 @@ elif section == "Macro Drivers":
         else:
             st.warning("No FX data available for the selected period.")
 
-        # US Yield Curve Spreads
         if all(col in df_us.columns for col in ["US 2Y", "US 10Y", "US 30Y"]):
             st.markdown("### US Yield Curve Spreads")
             spreads = pd.DataFrame({
@@ -432,7 +503,6 @@ elif section == "Macro Drivers":
             )
             st.plotly_chart(fig_spreads, use_container_width=True)
 
-        # Macro Correlation Heatmap
         st.markdown("### Macro Correlation Heatmap")
         macro_combined = pd.concat(
             [
@@ -451,21 +521,133 @@ elif section == "Macro Drivers":
         else:
             st.warning("Not enough macro data to compute correlations.")
 
-    # ---------- EXTENDED MACRO TAB (COMING SOON) ----------
+    # ---------- EXTENDED MACRO TAB (ADD‑ON)
     with macro_tabs[1]:
-        st.subheader("Extended Macro — Coming Soon")
+        st.subheader("Extended Macro Indicators")
+
         st.markdown(
-            """
-            This tab will host extended macro content, such as:
-
-            - Credit spreads (HY OAS, IG OAS)  
-            - Growth indicators (GDP, industrial production, retail sales)  
-            - Labour market (unemployment, participation)  
-            - PMIs (manufacturing, services)  
-            - Housing (starts, permits, prices)  
-            - Inflation expectations (5Y5Y, breakevens)  
-
-            The structure is ready — we’ll wire in additional FRED series here when you’re ready to expand.
-            """
+            "These indicators are optional add‑ons powered by FRED. "
+            "They expand the macro view into credit, growth, labour markets, PMIs, and inflation expectations."
         )
+
+        extended_macro = {
+            "HY OAS": "BAMLH0A0HYM2EY",
+            "IG OAS": "BAMLC0A0CM",
+            "Real GDP": "GDPC1",
+            "Industrial Production": "INDPRO",
+            "Retail Sales": "RSAFS",
+            "Unemployment Rate": "UNRATE",
+            "Job Openings (JOLTS)": "JTSJOL",
+            "ISM Manufacturing PMI": "NAPM",
+            "ISM Services PMI": "NAPMS",
+            "5Y5Y Inflation Expectations": "T5YIFR",
+            "10Y Breakeven Inflation": "T10YIE"
+        }
+
+        df_ext = load_fred_series(fred, extended_macro, start_date, end_date)
+
+        if df_ext.empty:
+            st.warning("No extended macro data available for the selected period.")
+        else:
+            st.markdown("### Extended Macro — Time Series")
+            fig_ext = px.line(
+                df_ext,
+                title="Extended Macro Indicators",
+                color_discrete_sequence=px.colors.qualitative.Set2
+            )
+            st.plotly_chart(fig_ext, use_container_width=True)
+
+            st.markdown("### Extended Macro — Historical Context (1Y)")
+            ext_context = macro_context_table(df_ext)
+            st.dataframe(ext_context, use_container_width=True)
+
+            st.markdown("### Extended Macro — Correlation Heatmap")
+            corr_ext = df_ext.pct_change().corr()
+            fig_ex, ax_ex = plt.subplots(figsize=(10, 8))
+            sns.heatmap(corr_ext, annot=True, cmap="coolwarm", linewidths=0.5, ax=ax_ex)
+            st.pyplot(fig_ex)
+
+# ---------------------------------------------------------
+# SUPPLY & DEMAND PAGE (EIA, OPTION A)
+# ---------------------------------------------------------
+elif section == "Supply & Demand (EIA)":
+    st.title("📦 US Supply & Demand — EIA")
+
+    st.subheader("EIA API Key")
+    eia_key = st.text_input("Enter your EIA API Key", type="password")
+
+    if not eia_key:
+        st.warning("Enter your EIA API key to load supply/demand data.")
+        st.stop()
+
+    st.markdown("### Core US Weekly Supply/Demand Balance (Option A)")
+
+    df_eia = load_eia_series_dict(eia_key, eia_core_series, start_date, end_date)
+
+    if df_eia.empty:
+        st.warning("No EIA data available for the selected period or invalid API key/permissions.")
+        st.stop()
+
+    st.markdown("#### Core Time Series")
+    fig_eia = px.line(
+        df_eia,
+        title="US Crude & Products — Core Weekly Series",
+        color_discrete_sequence=px.colors.qualitative.Set2
+    )
+    st.plotly_chart(fig_eia, use_container_width=True)
+
+    st.markdown("#### Latest Weekly Snapshot & Context")
+    eia_ctx = eia_context_table(df_eia)
+    st.dataframe(eia_ctx, use_container_width=True)
+
+    # Simple balance: Supply vs Demand
+    st.markdown("### Simple Balance — Supply vs Demand")
+
+    balance_df = pd.DataFrame(index=df_eia.index)
+
+    if "Crude Production" in df_eia.columns:
+        balance_df["Production"] = df_eia["Crude Production"]
+    if "Crude Net Imports" in df_eia.columns:
+        balance_df["Net Imports"] = df_eia["Crude Net Imports"]
+    if "Refinery Inputs (Crude Runs)" in df_eia.columns:
+        balance_df["Refinery Runs"] = df_eia["Refinery Inputs (Crude Runs)"]
+    if "Total Products Supplied (Demand)" in df_eia.columns:
+        balance_df["Total Demand (Products Supplied)"] = df_eia["Total Products Supplied (Demand)"]
+
+    if not balance_df.empty:
+        if all(col in balance_df.columns for col in ["Production", "Net Imports"]):
+            balance_df["Total Crude Supply"] = balance_df["Production"] + balance_df["Net Imports"]
+
+        st.markdown("#### Supply vs Demand Time Series")
+        fig_bal = px.line(
+            balance_df,
+            title="US Supply/Demand Components",
+            color_discrete_sequence=px.colors.qualitative.Set1
+        )
+        st.plotly_chart(fig_bal, use_container_width=True)
+
+    # Stocks vs implied change (very simple proxy)
+    if "Total Stocks (All Products)" in df_eia.columns and "Total Products Supplied (Demand)" in df_eia.columns:
+        st.markdown("### Stocks vs Implied Change (Simple Proxy)")
+
+        stocks = df_eia["Total Stocks (All Products)"].dropna()
+        implied_change = df_eia["Total Products Supplied (Demand)"].diff(-1) * -1  # rough proxy
+
+        stocks_df = pd.DataFrame({
+            "Total Stocks": stocks,
+            "Implied Stock Change (Proxy)": implied_change
+        }).dropna()
+
+        fig_stocks = px.line(
+            stocks_df,
+            title="Total Stocks vs Implied Stock Change (Proxy)",
+            color_discrete_sequence=px.colors.qualitative.Set3
+        )
+        st.plotly_chart(fig_stocks, use_container_width=True)
+
+    st.markdown("### Supply/Demand Correlation Heatmap")
+    corr_eia = df_eia.pct_change().corr()
+    fig_eh, ax_eh = plt.subplots(figsize=(10, 8))
+    sns.heatmap(corr_eia, annot=True, cmap="coolwarm", linewidths=0.5, ax=ax_eh)
+    st.pyplot(fig_eh)
 
