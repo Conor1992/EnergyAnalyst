@@ -217,39 +217,12 @@ def macro_context_table(df):
     return pd.DataFrame(rows, columns=["Series", "Current", "1Y Min", "1Y Max", "1Y Avg"])
 
 # ---------------------------------------------------------
-# HELPERS — TECHNICALS
-# ---------------------------------------------------------
-def compute_technical_indicators(df):
-    out = df.copy()
-
-    out["SMA_20"] = out["Close"].rolling(window=20).mean()
-    out["SMA_50"] = out["Close"].rolling(window=50).mean()
-
-    out["EMA_20"] = out["Close"].ewm(span=20, adjust=False).mean()
-    out["EMA_50"] = out["Close"].ewm(span=50, adjust=False).mean()
-
-    delta = out["Close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-    rs = avg_gain / avg_loss
-    out["RSI_14"] = 100 - (100 / (1 + rs))
-
-    ema12 = out["Close"].ewm(span=12, adjust=False).mean()
-    ema26 = out["Close"].ewm(span=26, adjust=False).mean()
-    out["MACD"] = ema12 - ema26
-    out["MACD_signal"] = out["MACD"].ewm(span=9, adjust=False).mean()
-
-    return out
-
-# ---------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------
 st.sidebar.title("Energy Dashboard MVP")
 section = st.sidebar.radio(
     "Select Section",
-    ["Prices", "Historical Pricing & Technicals", "Macro Drivers", "Supply & Demand (EIA)"],
+    ["Prices", "Macro Drivers"],
 )
 
 st.sidebar.subheader("Date Range")
@@ -360,92 +333,6 @@ if section == "Prices":
             fig_ct, axt = plt.subplots(figsize=(8, 6))
             sns.heatmap(corr_etf, annot=True, cmap="coolwarm", linewidths=0.5, ax=axt)
             st.pyplot(fig_ct)
-
-# ---------------------------------------------------------
-# HISTORICAL PRICING & TECHNICALS
-# ---------------------------------------------------------
-elif section == "Historical Pricing & Technicals":
-    st.title("📈 Historical Pricing & Technicals")
-    st.markdown(
-        "Runs SMA20/50, EMA20/50, RSI(14), MACD(12–26–9) on: CL=F, BZ=F, NG=F, RB=F, HO=F."
-    )
-
-    tech_tickers = ["CL=F", "BZ=F", "NG=F", "RB=F", "HO=F"]
-
-    for ticker in tech_tickers:
-        st.subheader(f"{label_map[ticker]} ({ticker})")
-
-        df_raw = yf.download(ticker, start=start_date, end=end_date, progress=False)
-        if df_raw.empty:
-            st.warning(f"No data available for {label_map[ticker]}")
-            st.markdown("---")
-            continue
-
-        df_raw = df_raw.rename(columns=str.title)
-        if "Close" not in df_raw.columns:
-            st.warning(f"No 'Close' column for {label_map[ticker]}")
-            st.markdown("---")
-            continue
-
-        df = df_raw.reset_index()[["Date", "Close"]].copy()
-        df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
-        df = df.dropna(subset=["Close"])
-        if df.empty:
-            st.warning(f"No valid close prices for {label_map[ticker]}")
-            st.markdown("---")
-            continue
-
-        df_ta = compute_technical_indicators(df)
-
-        # Price & MAs
-        st.markdown("**Price & Moving Averages**")
-        ma_cols = ["Close", "SMA_20", "SMA_50", "EMA_20", "EMA_50"]
-        valid_ma_cols = [c for c in ma_cols if c in df_ta.columns and df_ta[c].notna().any()]
-        if valid_ma_cols:
-            st.plotly_chart(
-                px.line(
-                    df_ta,
-                    x="Date",
-                    y=valid_ma_cols,
-                    title=f"{label_map[ticker]} — Price & Moving Averages",
-                ),
-                use_container_width=True,
-            )
-        else:
-            st.info("Not enough data for moving averages.")
-
-        # RSI
-        st.markdown("**RSI (14)**")
-        if "RSI_14" in df_ta.columns and df_ta["RSI_14"].notna().any():
-            fig_rsi = px.line(
-                df_ta,
-                x="Date",
-                y="RSI_14",
-                title=f"{label_map[ticker]} — RSI (14)",
-            )
-            fig_rsi.add_hrect(y0=30, y1=70, fillcolor="lightgray", opacity=0.2)
-            st.plotly_chart(fig_rsi, use_container_width=True)
-        else:
-            st.info("Not enough data for RSI.")
-
-        # MACD
-        st.markdown("**MACD (12–26–9)**")
-        macd_cols = ["MACD", "MACD_signal"]
-        valid_macd_cols = [c for c in macd_cols if c in df_ta.columns and df_ta[c].notna().any()]
-        if valid_macd_cols:
-            st.plotly_chart(
-                px.line(
-                    df_ta,
-                    x="Date",
-                    y=valid_macd_cols,
-                    title=f"{label_map[ticker]} — MACD",
-                ),
-                use_container_width=True,
-            )
-        else:
-            st.info("Not enough data for MACD.")
-
-        st.markdown("---")
 
 # ---------------------------------------------------------
 # MACRO DRIVERS
@@ -574,23 +461,3 @@ elif section == "Macro Drivers":
             fig_ex, ax_ex = plt.subplots(figsize=(10, 8))
             sns.heatmap(corr_ext, annot=True, cmap="coolwarm", linewidths=0.5, ax=ax_ex)
             st.pyplot(fig_ex)
-
-# ---------------------------------------------------------
-# SUPPLY & DEMAND (PLACEHOLDER)
-# ---------------------------------------------------------
-elif section == "Supply & Demand (EIA)":
-    st.title("📦 US Supply & Demand — EIA")
-    st.subheader("EIA API Key (Placeholder)")
-    st.text_input("Enter your EIA API Key (not yet used)", type="password")
-    st.markdown(
-        """
-        ### Supply & Demand Module — Coming Soon
-
-        Planned features:
-        - Weekly crude production, net imports, refinery runs
-        - Total products supplied (demand) and total stocks
-        - Simple supply vs demand balance
-        - Stocks vs implied stock change
-        - Correlation heatmaps across S&D components
-        """
-    )
