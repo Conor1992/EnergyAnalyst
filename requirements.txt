@@ -7,3 +7,4 @@ fredapi
 requests
 python-dotenv
 seaborn
+prophet
