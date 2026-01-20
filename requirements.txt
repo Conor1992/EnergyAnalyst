@@ -1,7 +1,8 @@
 streamlit
 yfinance
 pandas
+numpy
 plotly
 fredapi
 requests
-os
+python-dotenv
