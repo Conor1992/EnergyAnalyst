@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.express as px
@@ -14,7 +13,7 @@ from fredapi import Fred
 st.set_page_config(page_title="Energy Dashboard MVP", layout="wide")
 
 # ---------------------------------------------------------
-# HUMAN‑READABLE LABELS
+# LABELS & UNIVERSES
 # ---------------------------------------------------------
 label_map = {
     # Futures
@@ -23,7 +22,6 @@ label_map = {
     "RB=F": "RBOB Gasoline",
     "HO=F": "Heating Oil",
     "NG=F": "Henry Hub NatGas",
-
     # Equities
     "XOM": "Exxon Mobil",
     "CVX": "Chevron",
@@ -41,23 +39,19 @@ label_map = {
     "ENB": "Enbridge",
     "KMI": "Kinder Morgan",
     "WMB": "Williams",
-
     # ETFs
     "XOP": "S&P Oil & Gas E&P ETF",
     "IEO": "iShares Oil & Gas E&P",
     "XLE": "Energy Select Sector SPDR",
     "VDE": "Vanguard Energy ETF",
     "OIH": "Oil Services ETF",
-    "AMLP": "Alerian MLP ETF"
+    "AMLP": "Alerian MLP ETF",
 }
 
-# ---------------------------------------------------------
-# GROUPED UNIVERSE (PRICES)
-# ---------------------------------------------------------
 futures_groups = {
     "Crude Oil": ["CL=F", "BZ=F"],
     "Refined Products": ["RB=F", "HO=F"],
-    "Natural Gas": ["NG=F"]
+    "Natural Gas": ["NG=F"],
 }
 
 equity_groups = {
@@ -65,39 +59,36 @@ equity_groups = {
     "Shale Producers": ["EOG", "DVN"],
     "Oilfield Services": ["SLB", "HAL", "BKR"],
     "Refiners": ["VLO", "MPC", "PSX"],
-    "Midstream": ["ENB", "KMI", "WMB"]
+    "Midstream": ["ENB", "KMI", "WMB"],
 }
 
 etf_groups = {
     "Upstream": ["XOP", "IEO"],
     "Integrated/Broad Energy": ["XLE", "VDE"],
     "Oilfield Services": ["OIH"],
-    "Midstream": ["AMLP"]
+    "Midstream": ["AMLP"],
 }
 
-# ---------------------------------------------------------
-# MACRO UNIVERSE (FRED CODES — CORE SET)
-# ---------------------------------------------------------
 macro_us = {
     "US 2Y": "DGS2",
     "US 10Y": "DGS10",
     "US 30Y": "DGS30",
     "Fed Funds": "FEDFUNDS",
-    "CPI (Index)": "CPIAUCSL"
+    "CPI (Index)": "CPIAUCSL",
 }
 
 macro_global_yields = {
     "Germany 10Y": "IRLTLT01DEM156N",
     "France 10Y": "IRLTLT01FRM156N",
     "UK 10Y": "IRLTLT01GBM156N",
-    "Japan 10Y": "IRLTLT01JPM156N"
+    "Japan 10Y": "IRLTLT01JPM156N",
 }
 
 macro_fx = {
     "EUR/USD": "DEXUSEU",
     "GBP/USD": "DEXUSUK",
     "USD/JPY": "DEXJPUS",
-    "USD/CNY": "DEXCHUS"
+    "USD/CNY": "DEXCHUS",
 }
 
 # ---------------------------------------------------------
@@ -107,8 +98,8 @@ def download_close_single(ticker, start, end):
     df = yf.download(ticker, start=start, end=end, progress=False)
     if df.empty:
         return pd.Series(dtype="float64")
-    s = df["Close"].rename(ticker)
-    return s
+    return df["Close"].rename(ticker)
+
 
 def load_prices(tickers, start, end):
     frames = []
@@ -123,6 +114,7 @@ def load_prices(tickers, start, end):
     df = df.rename(columns=label_map)
     return df.dropna(how="all")
 
+
 def normalize(df, norm_date):
     if df.empty:
         return df, norm_date
@@ -130,10 +122,13 @@ def normalize(df, norm_date):
         norm_date = df.index[0]
     return df / df.loc[norm_date] * 100, norm_date
 
+
 def performance_table(tickers):
+    start = date.today() - timedelta(days=365)
+    end = date.today()
     frames = []
     for t in tickers:
-        s = download_close_single(t, date.today() - timedelta(days=365), date.today())
+        s = download_close_single(t, start, end)
         if s.empty:
             continue
         frames.append(s)
@@ -168,10 +163,10 @@ def performance_table(tickers):
             else:
                 pct = (last_price - past.iloc[0]) / past.iloc[0] * 100
                 row.append(round(pct, 2))
-
         results.append(row)
 
     return pd.DataFrame(results, columns=["Name", "Price", "1D %", "1M %", "3M %", "12M %"])
+
 
 def grouped_performance_table(groups):
     frames = []
@@ -202,6 +197,7 @@ def load_fred_series(fred, series_dict, start, end):
         return pd.DataFrame()
     return pd.DataFrame(data)
 
+
 def macro_context_table(df):
     rows = []
     for col in df.columns:
@@ -209,16 +205,15 @@ def macro_context_table(df):
         if series.empty:
             continue
         current = series.iloc[-1]
-        min_1y = series.min()
-        max_1y = series.max()
-        avg_1y = series.mean()
-        rows.append([
-            col,
-            round(current, 3),
-            round(min_1y, 3),
-            round(max_1y, 3),
-            round(avg_1y, 3)
-        ])
+        rows.append(
+            [
+                col,
+                round(current, 3),
+                round(series.min(), 3),
+                round(series.max(), 3),
+                round(series.mean(), 3),
+            ]
+        )
     return pd.DataFrame(rows, columns=["Series", "Current", "1Y Min", "1Y Max", "1Y Avg"])
 
 # ---------------------------------------------------------
@@ -254,7 +249,7 @@ def compute_technical_indicators(df):
 st.sidebar.title("Energy Dashboard MVP")
 section = st.sidebar.radio(
     "Select Section",
-    ["Prices", "Historical Pricing & Technicals", "Macro Drivers", "Supply & Demand (EIA)"]
+    ["Prices", "Historical Pricing & Technicals", "Macro Drivers", "Supply & Demand (EIA)"],
 )
 
 st.sidebar.subheader("Date Range")
@@ -267,11 +262,10 @@ st.sidebar.subheader("Normalization Date (Prices)")
 norm_input = st.sidebar.date_input("Normalize from", date(2022, 3, 1))
 
 # ---------------------------------------------------------
-# PRICES PAGE
+# PRICES
 # ---------------------------------------------------------
 if section == "Prices":
     st.title("💰 Prices")
-
     tabs = st.tabs(["Futures", "Equities", "ETFs"])
 
     # FUTURES
@@ -283,11 +277,7 @@ if section == "Prices":
         if df_fut.empty:
             st.warning("No futures data available for the selected period.")
         else:
-            fig_fut = px.line(
-                df_fut,
-                title="Futures — Price Levels"
-            )
-            st.plotly_chart(fig_fut, use_container_width=True)
+            st.plotly_chart(px.line(df_fut, title="Futures — Price Levels"), use_container_width=True)
 
             st.subheader("Futures — Performance Table")
             fut_table = grouped_performance_table(futures_groups)
@@ -298,11 +288,10 @@ if section == "Prices":
 
             st.subheader(f"Futures — Normalized Performance (100 = {norm_input})")
             df_fut_norm, fut_norm_date = normalize(df_fut, pd.to_datetime(norm_input))
-            fig_fut_norm = px.line(
-                df_fut_norm,
-                title=f"Futures — Normalized Since {fut_norm_date.date()}"
+            st.plotly_chart(
+                px.line(df_fut_norm, title=f"Futures — Normalized Since {fut_norm_date.date()}"),
+                use_container_width=True,
             )
-            st.plotly_chart(fig_fut_norm, use_container_width=True)
 
             st.subheader("Futures — Correlation Heatmap")
             corr_fut = df_fut.pct_change().corr()
@@ -319,11 +308,7 @@ if section == "Prices":
         if df_eq.empty:
             st.warning("No equity data available for the selected period.")
         else:
-            fig_eq = px.line(
-                df_eq,
-                title="Equities — Price Levels"
-            )
-            st.plotly_chart(fig_eq, use_container_width=True)
+            st.plotly_chart(px.line(df_eq, title="Equities — Price Levels"), use_container_width=True)
 
             st.subheader("Equities — Performance Table")
             eq_table = grouped_performance_table(equity_groups)
@@ -334,11 +319,10 @@ if section == "Prices":
 
             st.subheader(f"Equities — Normalized Performance (100 = {norm_input})")
             df_eq_norm, eq_norm_date = normalize(df_eq, pd.to_datetime(norm_input))
-            fig_eq_norm = px.line(
-                df_eq_norm,
-                title=f"Equities — Normalized Since {eq_norm_date.date()}"
+            st.plotly_chart(
+                px.line(df_eq_norm, title=f"Equities — Normalized Since {eq_norm_date.date()}"),
+                use_container_width=True,
             )
-            st.plotly_chart(fig_eq_norm, use_container_width=True)
 
             st.subheader("Equities — Correlation Heatmap")
             corr_eq = df_eq.pct_change().corr()
@@ -355,11 +339,7 @@ if section == "Prices":
         if df_etf.empty:
             st.warning("No ETF data available for the selected period.")
         else:
-            fig_etf = px.line(
-                df_etf,
-                title="ETFs — Price Levels"
-            )
-            st.plotly_chart(fig_etf, use_container_width=True)
+            st.plotly_chart(px.line(df_etf, title="ETFs — Price Levels"), use_container_width=True)
 
             st.subheader("ETFs — Performance Table")
             etf_table = grouped_performance_table(etf_groups)
@@ -370,11 +350,10 @@ if section == "Prices":
 
             st.subheader(f"ETFs — Normalized Performance (100 = {norm_input})")
             df_etf_norm, etf_norm_date = normalize(df_etf, pd.to_datetime(norm_input))
-            fig_etf_norm = px.line(
-                df_etf_norm,
-                title=f"ETFs — Normalized Since {etf_norm_date.date()}"
+            st.plotly_chart(
+                px.line(df_etf_norm, title=f"ETFs — Normalized Since {etf_norm_date.date()}"),
+                use_container_width=True,
             )
-            st.plotly_chart(fig_etf_norm, use_container_width=True)
 
             st.subheader("ETFs — Correlation Heatmap")
             corr_etf = df_etf.pct_change().corr()
@@ -387,15 +366,9 @@ if section == "Prices":
 # ---------------------------------------------------------
 elif section == "Historical Pricing & Technicals":
     st.title("📈 Historical Pricing & Technicals")
-
-    st.markdown("""
-    Automatically runs technicals on:
-    - CL=F, BZ=F, NG=F, RB=F, HO=F
-    Indicators:
-    - SMA20, SMA50, EMA20, EMA50
-    - RSI(14)
-    - MACD(12–26–9)
-    """)
+    st.markdown(
+        "Runs SMA20/50, EMA20/50, RSI(14), MACD(12–26–9) on: CL=F, BZ=F, NG=F, RB=F, HO=F."
+    )
 
     tech_tickers = ["CL=F", "BZ=F", "NG=F", "RB=F", "HO=F"]
 
@@ -417,7 +390,6 @@ elif section == "Historical Pricing & Technicals":
         df = df_raw.reset_index()[["Date", "Close"]].copy()
         df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
         df = df.dropna(subset=["Close"])
-
         if df.empty:
             st.warning(f"No valid close prices for {label_map[ticker]}")
             st.markdown("---")
@@ -425,19 +397,20 @@ elif section == "Historical Pricing & Technicals":
 
         df_ta = compute_technical_indicators(df)
 
-        # Price + MAs
+        # Price & MAs
         st.markdown("**Price & Moving Averages**")
         ma_cols = ["Close", "SMA_20", "SMA_50", "EMA_20", "EMA_50"]
         valid_ma_cols = [c for c in ma_cols if c in df_ta.columns and df_ta[c].notna().any()]
-
         if valid_ma_cols:
-            fig_ma = px.line(
-                df_ta,
-                x="Date",
-                y=valid_ma_cols,
-                title=f"{label_map[ticker]} — Price & Moving Averages"
+            st.plotly_chart(
+                px.line(
+                    df_ta,
+                    x="Date",
+                    y=valid_ma_cols,
+                    title=f"{label_map[ticker]} — Price & Moving Averages",
+                ),
+                use_container_width=True,
             )
-            st.plotly_chart(fig_ma, use_container_width=True)
         else:
             st.info("Not enough data for moving averages.")
 
@@ -448,7 +421,7 @@ elif section == "Historical Pricing & Technicals":
                 df_ta,
                 x="Date",
                 y="RSI_14",
-                title=f"{label_map[ticker]} — RSI (14)"
+                title=f"{label_map[ticker]} — RSI (14)",
             )
             fig_rsi.add_hrect(y0=30, y1=70, fillcolor="lightgray", opacity=0.2)
             st.plotly_chart(fig_rsi, use_container_width=True)
@@ -459,15 +432,16 @@ elif section == "Historical Pricing & Technicals":
         st.markdown("**MACD (12–26–9)**")
         macd_cols = ["MACD", "MACD_signal"]
         valid_macd_cols = [c for c in macd_cols if c in df_ta.columns and df_ta[c].notna().any()]
-
         if valid_macd_cols:
-            fig_macd = px.line(
-                df_ta,
-                x="Date",
-                y=valid_macd_cols,
-                title=f"{label_map[ticker]} — MACD"
+            st.plotly_chart(
+                px.line(
+                    df_ta,
+                    x="Date",
+                    y=valid_macd_cols,
+                    title=f"{label_map[ticker]} — MACD",
+                ),
+                use_container_width=True,
             )
-            st.plotly_chart(fig_macd, use_container_width=True)
         else:
             st.info("Not enough data for MACD.")
 
@@ -479,9 +453,7 @@ elif section == "Historical Pricing & Technicals":
 elif section == "Macro Drivers":
     st.title("🌍 Macro Drivers")
 
-    st.subheader("FRED API Key")
     fred_key = st.text_input("Enter your FRED API Key", type="password")
-
     if not fred_key:
         st.warning("Enter your FRED API key to load macro data.")
         st.stop()
@@ -494,7 +466,6 @@ elif section == "Macro Drivers":
 
     macro_tabs = st.tabs(["Core Macro (Option A)", "Extended Macro (Add‑On)"])
 
-    # CORE MACRO
     with macro_tabs[0]:
         st.subheader("Core Macro — Yields, FX, Policy, Inflation")
 
@@ -504,69 +475,65 @@ elif section == "Macro Drivers":
 
         st.markdown("### US Rates & Yields")
         if not df_us.empty:
-            fig_us = px.line(
-                df_us[["US 2Y", "US 10Y", "US 30Y", "Fed Funds"]],
-                title="US Yields & Fed Funds"
+            st.plotly_chart(
+                px.line(
+                    df_us[["US 2Y", "US 10Y", "US 30Y", "Fed Funds"]],
+                    title="US Yields & Fed Funds",
+                ),
+                use_container_width=True,
             )
-            st.plotly_chart(fig_us, use_container_width=True)
-
             st.markdown("#### US Rates — Historical Context (1Y)")
-            us_context = macro_context_table(df_us[["US 2Y", "US 10Y", "US 30Y", "Fed Funds"]])
-            st.dataframe(us_context, use_container_width=True)
+            st.dataframe(
+                macro_context_table(df_us[["US 2Y", "US 10Y", "US 30Y", "Fed Funds"]]),
+                use_container_width=True,
+            )
         else:
             st.warning("No US macro data available for the selected period.")
 
-        st.markdown("### Global 10Y Yields (Germany, France, UK, Japan)")
+        st.markdown("### Global 10Y Yields")
         if not df_global.empty:
-            fig_global = px.line(
-                df_global,
-                title="Global 10Y Yields"
+            st.plotly_chart(
+                px.line(df_global, title="Global 10Y Yields"),
+                use_container_width=True,
             )
-            st.plotly_chart(fig_global, use_container_width=True)
-
             st.markdown("#### Global Yields — Historical Context (1Y)")
-            global_context = macro_context_table(df_global)
-            st.dataframe(global_context, use_container_width=True)
+            st.dataframe(macro_context_table(df_global), use_container_width=True)
         else:
             st.warning("No global yield data available for the selected period.")
 
         st.markdown("### FX — USD Majors (FRED DEX Series)")
         if not df_fx.empty:
-            fig_fx = px.line(
-                df_fx,
-                title="FX Rates (FRED DEX)"
+            st.plotly_chart(
+                px.line(df_fx, title="FX Rates (FRED DEX)"),
+                use_container_width=True,
             )
-            st.plotly_chart(fig_fx, use_container_width=True)
-
             st.markdown("#### FX — Historical Context (1Y)")
-            fx_context = macro_context_table(df_fx)
-            st.dataframe(fx_context, use_container_width=True)
+            st.dataframe(macro_context_table(df_fx), use_container_width=True)
         else:
             st.warning("No FX data available for the selected period.")
 
         if all(col in df_us.columns for col in ["US 2Y", "US 10Y", "US 30Y"]):
             st.markdown("### US Yield Curve Spreads")
-            spreads = pd.DataFrame({
-                "10Y–2Y": df_us["US 10Y"] - df_us["US 2Y"],
-                "30Y–10Y": df_us["US 30Y"] - df_us["US 10Y"]
-            }).dropna()
-
-            fig_spreads = px.line(
-                spreads,
-                title="US Yield Curve Spreads"
+            spreads = pd.DataFrame(
+                {
+                    "10Y–2Y": df_us["US 10Y"] - df_us["US 2Y"],
+                    "30Y–10Y": df_us["US 30Y"] - df_us["US 10Y"],
+                }
+            ).dropna()
+            st.plotly_chart(
+                px.line(spreads, title="US Yield Curve Spreads"),
+                use_container_width=True,
             )
-            st.plotly_chart(fig_spreads, use_container_width=True)
 
         st.markdown("### Macro Correlation Heatmap")
         macro_combined = pd.concat(
             [
                 df_us[["US 2Y", "US 10Y", "US 30Y", "Fed Funds"]].pct_change(),
                 df_global.pct_change(),
-                df_fx.pct_change()
+                df_fx.pct_change(),
             ],
-            axis=1
+            axis=1,
         ).dropna(how="all")
-
         if not macro_combined.empty:
             corr_macro = macro_combined.corr()
             fig_mc, axm = plt.subplots(figsize=(10, 8))
@@ -575,14 +542,8 @@ elif section == "Macro Drivers":
         else:
             st.warning("Not enough macro data to compute correlations.")
 
-    # EXTENDED MACRO
     with macro_tabs[1]:
         st.subheader("Extended Macro Indicators")
-
-        st.markdown(
-            "Optional add‑ons powered by FRED: credit, growth, labour markets, PMIs, inflation expectations."
-        )
-
         extended_macro = {
             "HY OAS": "BAMLH0A0HYM2EY",
             "IG OAS": "BAMLC0A0CM",
@@ -594,24 +555,19 @@ elif section == "Macro Drivers":
             "ISM Manufacturing PMI": "NAPM",
             "ISM Services PMI": "NAPMS",
             "5Y5Y Inflation Expectations": "T5YIFR",
-            "10Y Breakeven Inflation": "T10YIE"
+            "10Y Breakeven Inflation": "T10YIE",
         }
 
         df_ext = load_fred_series(fred, extended_macro, start_date, end_date)
-
         if df_ext.empty:
             st.warning("No extended macro data available for the selected period.")
         else:
-            st.markdown("### Extended Macro — Time Series")
-            fig_ext = px.line(
-                df_ext,
-                title="Extended Macro Indicators"
+            st.plotly_chart(
+                px.line(df_ext, title="Extended Macro Indicators"),
+                use_container_width=True,
             )
-            st.plotly_chart(fig_ext, use_container_width=True)
-
             st.markdown("### Extended Macro — Historical Context (1Y)")
-            ext_context = macro_context_table(df_ext)
-            st.dataframe(ext_context, use_container_width=True)
+            st.dataframe(macro_context_table(df_ext), use_container_width=True)
 
             st.markdown("### Extended Macro — Correlation Heatmap")
             corr_ext = df_ext.pct_change().corr()
@@ -624,10 +580,8 @@ elif section == "Macro Drivers":
 # ---------------------------------------------------------
 elif section == "Supply & Demand (EIA)":
     st.title("📦 US Supply & Demand — EIA")
-
     st.subheader("EIA API Key (Placeholder)")
     st.text_input("Enter your EIA API Key (not yet used)", type="password")
-
     st.markdown(
         """
         ### Supply & Demand Module — Coming Soon
