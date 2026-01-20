@@ -226,13 +226,21 @@ def compute_technical_indicators(df):
 
     return out
 
+def make_numeric(df, date_col="Date"):
+    df_num = df.copy()
+    for col in df_num.columns:
+        if col != date_col:
+            df_num[col] = pd.to_numeric(df_num[col], errors="coerce")
+    df_num = df_num.dropna(axis=1, how="all")
+    return df_num
+
 # ---------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------
 st.sidebar.title("Energy Dashboard MVP")
 section = st.sidebar.radio(
     "Select Section",
-    ["Prices", "Pricing & Historical", "Macro Drivers", "Supply & Demand (EIA)"]
+    ["Prices", "Historical Pricing & Technicals", "Macro Drivers", "Supply & Demand (EIA)"]
 )
 
 st.sidebar.subheader("Date Range")
@@ -367,10 +375,10 @@ if section == "Prices":
             st.pyplot(fig_ct)
 
 # ---------------------------------------------------------
-# PRICING & HISTORICAL (TECHNICALS, NO PROPHET, NO DROPDOWN)
+# HISTORICAL PRICING & TECHNICALS
 # ---------------------------------------------------------
-elif section == "Pricing & Historical":
-    st.title("📈 Pricing & Historical Technicals")
+elif section == "Historical Pricing & Technicals":
+    st.title("📈 Historical Pricing & Technicals")
 
     st.markdown("""
     This section automatically loads historical prices for key futures
@@ -398,20 +406,21 @@ elif section == "Pricing & Historical":
             st.markdown("---")
             continue
 
-        df = df.reset_index()
+        df = df.reset_index()  # ensure Date column
         df_ta = compute_technical_indicators(df)
+        df_plot = make_numeric(df_ta, date_col="Date")
 
         # PRICE + MAs
         st.markdown("**Price & Moving Averages**")
         ma_cols = ["Close", "SMA_20", "SMA_50", "EMA_20", "EMA_50"]
-        valid_ma_cols = [c for c in ma_cols if c in df_ta.columns and df_ta[c].notna().any()]
+        valid_ma_cols = [c for c in ma_cols if c in df_plot.columns and df_plot[c].notna().any()]
 
         if valid_ma_cols:
             fig_ma = px.line(
-                df_ta,
+                df_plot,
                 x="Date",
                 y=valid_ma_cols,
-                title=f"{label_map[ticker]} — Price & MAs"
+                title=f"{label_map[ticker]} — Price & Moving Averages"
             )
             st.plotly_chart(fig_ma, use_container_width=True)
         else:
@@ -419,9 +428,9 @@ elif section == "Pricing & Historical":
 
         # RSI
         st.markdown("**RSI (14)**")
-        if "RSI_14" in df_ta.columns and df_ta["RSI_14"].notna().any():
+        if "RSI_14" in df_plot.columns and df_plot["RSI_14"].notna().any():
             fig_rsi = px.line(
-                df_ta,
+                df_plot,
                 x="Date",
                 y="RSI_14",
                 title=f"{label_map[ticker]} — RSI (14)"
@@ -434,11 +443,11 @@ elif section == "Pricing & Historical":
         # MACD
         st.markdown("**MACD (12–26–9)**")
         macd_cols = ["MACD", "MACD_signal"]
-        valid_macd_cols = [c for c in macd_cols if c in df_ta.columns and df_ta[c].notna().any()]
+        valid_macd_cols = [c for c in macd_cols if c in df_plot.columns and df_plot[c].notna().any()]
 
         if valid_macd_cols:
             fig_macd = px.line(
-                df_ta,
+                df_plot,
                 x="Date",
                 y=valid_macd_cols,
                 title=f"{label_map[ticker]} — MACD"
