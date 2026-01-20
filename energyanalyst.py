@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.express as px
 import seaborn as sns
 import matplotlib.pyplot as plt
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta
 
 # ---------------------------------------------------------
 # CONFIG
@@ -77,10 +77,10 @@ etf_groups = {
 # MACRO UNIVERSE
 # ---------------------------------------------------------
 macro_yields = {
-    "US 2Y": "^UST2Y",
-    "US 10Y": "^TNX",      # note: ^TNX is 10x yield
-    "US 30Y": "^TYX",      # 10x yield
-    "UK 10Y": "^GUKG10",
+    "US 3M (proxy for 2Y)": "^IRX",
+    "US 10Y": "^TNX",      # divide by 10
+    "US 30Y": "^TYX",      # divide by 10
+    "UK 10Y": "^UK10Y",
     "Germany 10Y": "^DE10Y",
     "France 10Y": "^FR10Y",
     "Japan 10Y": "^JP10Y"
@@ -99,7 +99,7 @@ macro_policy = {
 }
 
 # ---------------------------------------------------------
-# HELPERS
+# HELPERS — PRICES
 # ---------------------------------------------------------
 def load_prices(tickers, start, end):
     df = yf.download(tickers, start=start, end=end, progress=False)["Close"]
@@ -122,12 +122,13 @@ def performance_table(tickers):
     results = []
     for ticker in tickers:
         name = label_map[ticker]
+        if name not in df.columns:
+            continue
         series = df[name].dropna()
         if series.empty:
             continue
 
         last_price = series.iloc[-1]
-
         today = series.index[-1]
         lookbacks = {
             "1D %": today - timedelta(days=1),
@@ -137,7 +138,6 @@ def performance_table(tickers):
         }
 
         row = [name, round(last_price, 2)]
-
         for _, start_date in lookbacks.items():
             past = series[series.index >= start_date]
             if past.empty:
@@ -154,23 +154,31 @@ def grouped_performance_table(groups):
     frames = []
     for group_name, tickers in groups.items():
         table = performance_table(tickers)
+        if table.empty:
+            continue
         table.insert(0, "Group", group_name)
         frames.append(table)
+    if not frames:
+        return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
 
+# ---------------------------------------------------------
+# HELPERS — MACRO
+# ---------------------------------------------------------
 def load_macro_series(series_dict, start, end):
     data = {}
     for name, ticker in series_dict.items():
         try:
             df = yf.download(ticker, start=start, end=end, progress=False)["Close"]
-            if df.empty:
+            if df is None or df.empty:
                 continue
-            # Adjust for ^TNX/^TYX being 10x yield
             if ticker in ["^TNX", "^TYX"]:
                 df = df / 10.0
             data[name] = df
         except Exception:
             continue
+    if not data:
+        return pd.DataFrame()
     return pd.DataFrame(data).dropna(how="all")
 
 def macro_context_table(df):
@@ -201,7 +209,6 @@ section = st.sidebar.radio("Select Section", ["Prices", "Macro Drivers"])
 st.sidebar.subheader("Date Range")
 default_start = date.today() - timedelta(days=365)
 default_end = date.today()
-
 start_date = st.sidebar.date_input("Start", default_start)
 end_date = st.sidebar.date_input("End", default_end)
 
@@ -222,31 +229,37 @@ if section == "Prices":
         futures_tickers = sum(futures_groups.values(), [])
         df_fut = load_prices(futures_tickers, start_date, end_date)
 
-        fig_fut = px.line(
-            df_fut,
-            title="Futures — Price Levels",
-            color_discrete_sequence=px.colors.qualitative.Set2
-        )
-        st.plotly_chart(fig_fut, use_container_width=True)
+        if df_fut.empty:
+            st.warning("No futures data available for the selected period.")
+        else:
+            fig_fut = px.line(
+                df_fut,
+                title="Futures — Price Levels",
+                color_discrete_sequence=px.colors.qualitative.Set2
+            )
+            st.plotly_chart(fig_fut, use_container_width=True)
 
-        st.subheader("Futures — Performance Table")
-        fut_table = grouped_performance_table(futures_groups)
-        st.dataframe(fut_table, use_container_width=True)
+            st.subheader("Futures — Performance Table")
+            fut_table = grouped_performance_table(futures_groups)
+            if fut_table.empty:
+                st.warning("No futures performance data available.")
+            else:
+                st.dataframe(fut_table, use_container_width=True)
 
-        st.subheader(f"Futures — Normalized Performance (100 = {norm_input})")
-        df_fut_norm, fut_norm_date = normalize(df_fut, pd.to_datetime(norm_input))
-        fig_fut_norm = px.line(
-            df_fut_norm,
-            title=f"Futures — Normalized Since {fut_norm_date.date()}",
-            color_discrete_sequence=px.colors.qualitative.Set1
-        )
-        st.plotly_chart(fig_fut_norm, use_container_width=True)
+            st.subheader(f"Futures — Normalized Performance (100 = {norm_input})")
+            df_fut_norm, fut_norm_date = normalize(df_fut, pd.to_datetime(norm_input))
+            fig_fut_norm = px.line(
+                df_fut_norm,
+                title=f"Futures — Normalized Since {fut_norm_date.date()}",
+                color_discrete_sequence=px.colors.qualitative.Set1
+            )
+            st.plotly_chart(fig_fut_norm, use_container_width=True)
 
-        st.subheader("Futures — Correlation Heatmap")
-        corr_fut = df_fut.pct_change().corr()
-        fig_cf, axf = plt.subplots(figsize=(8, 6))
-        sns.heatmap(corr_fut, annot=True, cmap="coolwarm", linewidths=0.5, ax=axf)
-        st.pyplot(fig_cf)
+            st.subheader("Futures — Correlation Heatmap")
+            corr_fut = df_fut.pct_change().corr()
+            fig_cf, axf = plt.subplots(figsize=(8, 6))
+            sns.heatmap(corr_fut, annot=True, cmap="coolwarm", linewidths=0.5, ax=axf)
+            st.pyplot(fig_cf)
 
     # ---------- EQUITIES ----------
     with tabs[1]:
@@ -254,31 +267,37 @@ if section == "Prices":
         eq_tickers = sum(equity_groups.values(), [])
         df_eq = load_prices(eq_tickers, start_date, end_date)
 
-        fig_eq = px.line(
-            df_eq,
-            title="Equities — Price Levels",
-            color_discrete_sequence=px.colors.qualitative.Set2
-        )
-        st.plotly_chart(fig_eq, use_container_width=True)
+        if df_eq.empty:
+            st.warning("No equity data available for the selected period.")
+        else:
+            fig_eq = px.line(
+                df_eq,
+                title="Equities — Price Levels",
+                color_discrete_sequence=px.colors.qualitative.Set2
+            )
+            st.plotly_chart(fig_eq, use_container_width=True)
 
-        st.subheader("Equities — Performance Table")
-        eq_table = grouped_performance_table(equity_groups)
-        st.dataframe(eq_table, use_container_width=True)
+            st.subheader("Equities — Performance Table")
+            eq_table = grouped_performance_table(equity_groups)
+            if eq_table.empty:
+                st.warning("No equity performance data available.")
+            else:
+                st.dataframe(eq_table, use_container_width=True)
 
-        st.subheader(f"Equities — Normalized Performance (100 = {norm_input})")
-        df_eq_norm, eq_norm_date = normalize(df_eq, pd.to_datetime(norm_input))
-        fig_eq_norm = px.line(
-            df_eq_norm,
-            title=f"Equities — Normalized Since {eq_norm_date.date()}",
-            color_discrete_sequence=px.colors.qualitative.Set1
-        )
-        st.plotly_chart(fig_eq_norm, use_container_width=True)
+            st.subheader(f"Equities — Normalized Performance (100 = {norm_input})")
+            df_eq_norm, eq_norm_date = normalize(df_eq, pd.to_datetime(norm_input))
+            fig_eq_norm = px.line(
+                df_eq_norm,
+                title=f"Equities — Normalized Since {eq_norm_date.date()}",
+                color_discrete_sequence=px.colors.qualitative.Set1
+            )
+            st.plotly_chart(fig_eq_norm, use_container_width=True)
 
-        st.subheader("Equities — Correlation Heatmap")
-        corr_eq = df_eq.pct_change().corr()
-        fig_ce, axe = plt.subplots(figsize=(8, 6))
-        sns.heatmap(corr_eq, annot=True, cmap="coolwarm", linewidths=0.5, ax=axe)
-        st.pyplot(fig_ce)
+            st.subheader("Equities — Correlation Heatmap")
+            corr_eq = df_eq.pct_change().corr()
+            fig_ce, axe = plt.subplots(figsize=(8, 6))
+            sns.heatmap(corr_eq, annot=True, cmap="coolwarm", linewidths=0.5, ax=axe)
+            st.pyplot(fig_ce)
 
     # ---------- ETFS ----------
     with tabs[2]:
@@ -286,31 +305,37 @@ if section == "Prices":
         etf_tickers = sum(etf_groups.values(), [])
         df_etf = load_prices(etf_tickers, start_date, end_date)
 
-        fig_etf = px.line(
-            df_etf,
-            title="ETFs — Price Levels",
-            color_discrete_sequence=px.colors.qualitative.Set2
-        )
-        st.plotly_chart(fig_etf, use_container_width=True)
+        if df_etf.empty:
+            st.warning("No ETF data available for the selected period.")
+        else:
+            fig_etf = px.line(
+                df_etf,
+                title="ETFs — Price Levels",
+                color_discrete_sequence=px.colors.qualitative.Set2
+            )
+            st.plotly_chart(fig_etf, use_container_width=True)
 
-        st.subheader("ETFs — Performance Table")
-        etf_table = grouped_performance_table(etf_groups)
-        st.dataframe(etf_table, use_container_width=True)
+            st.subheader("ETFs — Performance Table")
+            etf_table = grouped_performance_table(etf_groups)
+            if etf_table.empty:
+                st.warning("No ETF performance data available.")
+            else:
+                st.dataframe(etf_table, use_container_width=True)
 
-        st.subheader(f"ETFs — Normalized Performance (100 = {norm_input})")
-        df_etf_norm, etf_norm_date = normalize(df_etf, pd.to_datetime(norm_input))
-        fig_etf_norm = px.line(
-            df_etf_norm,
-            title=f"ETFs — Normalized Since {etf_norm_date.date()}",
-            color_discrete_sequence=px.colors.qualitative.Set1
-        )
-        st.plotly_chart(fig_etf_norm, use_container_width=True)
+            st.subheader(f"ETFs — Normalized Performance (100 = {norm_input})")
+            df_etf_norm, etf_norm_date = normalize(df_etf, pd.to_datetime(norm_input))
+            fig_etf_norm = px.line(
+                df_etf_norm,
+                title=f"ETFs — Normalized Since {etf_norm_date.date()}",
+                color_discrete_sequence=px.colors.qualitative.Set1
+            )
+            st.plotly_chart(fig_etf_norm, use_container_width=True)
 
-        st.subheader("ETFs — Correlation Heatmap")
-        corr_etf = df_etf.pct_change().corr()
-        fig_ct, axt = plt.subplots(figsize=(8, 6))
-        sns.heatmap(corr_etf, annot=True, cmap="coolwarm", linewidths=0.5, ax=axt)
-        st.pyplot(fig_ct)
+            st.subheader("ETFs — Correlation Heatmap")
+            corr_etf = df_etf.pct_change().corr()
+            fig_ct, axt = plt.subplots(figsize=(8, 6))
+            sns.heatmap(corr_etf, annot=True, cmap="coolwarm", linewidths=0.5, ax=axt)
+            st.pyplot(fig_ct)
 
 # ---------------------------------------------------------
 # MACRO DRIVERS PAGE
@@ -318,7 +343,6 @@ if section == "Prices":
 elif section == "Macro Drivers":
     st.title("🌍 Macro Drivers")
 
-    # ---------- LOAD MACRO DATA ----------
     df_yields = load_macro_series(macro_yields, start_date, end_date)
     df_fx = load_macro_series(macro_fx, start_date, end_date)
     df_policy = load_macro_series(macro_policy, start_date, end_date)
@@ -339,7 +363,7 @@ elif section == "Macro Drivers":
     else:
         st.warning("No yield data available for the selected period.")
 
-    # ---------- YIELD CURVE SPREADS (US) ----------
+    # ---------- US YIELD CURVE SPREADS ----------
     if all(col in df_yields.columns for col in ["US 2Y", "US 10Y", "US 30Y"]):
         st.subheader("US Yield Curve Spreads")
         spreads = pd.DataFrame({
@@ -394,61 +418,3 @@ elif section == "Macro Drivers":
         st.pyplot(fig_mc)
     else:
         st.warning("Not enough macro data to compute correlations.")
-
-    macro_fx = {
-        "DXY": "DX-Y.NYB",
-        "EUR/USD": "EURUSD=X",
-        "USD/JPY": "JPY=X",
-        "USD/CNY": "CNY=X"
-    }
-
-    # ------------------ FETCH FRED DATA ------------------
-    fred_data = {}
-    for name, series in macro_fred.items():
-        try:
-            df = yf.download(series, start=start_date, end=end_date, progress=False)["Close"]
-            fred_data[name] = df
-        except:
-            pass
-
-    # ------------------ FETCH FX DATA ------------------
-    fx_data = {}
-    for name, ticker in macro_fx.items():
-        try:
-            df = yf.download(ticker, start=start_date, end=end_date, progress=False)["Close"]
-            fx_data[name] = df
-        except:
-            pass
-
-    # ------------------ COMBINE INTO DATAFRAMES ------------------
-    df_rates = pd.DataFrame(fred_data).dropna(how="all")
-    df_fx = pd.DataFrame(fx_data).dropna(how="all")
-
-    # ------------------ RATES & YIELDS ------------------
-    st.subheader("Interest Rates & Yields")
-    fig_rates = px.line(df_rates, title="US Treasury Yields & Fed Funds", color_discrete_sequence=px.colors.qualitative.Set2)
-    st.plotly_chart(fig_rates, use_container_width=True)
-
-    # ------------------ YIELD CURVE SPREADS ------------------
-    st.subheader("Yield Curve Spreads")
-    spreads = pd.DataFrame({
-        "10Y–2Y": df_rates["US 10Y Yield"] - df_rates["US 2Y Yield"],
-        "30Y–10Y": df_rates["US 30Y Yield"] - df_rates["US 10Y Yield"]
-    }).dropna()
-
-    fig_spreads = px.line(spreads, title="Yield Curve Spreads", color_discrete_sequence=px.colors.qualitative.Set1)
-    st.plotly_chart(fig_spreads, use_container_width=True)
-
-    # ------------------ FX ------------------
-    st.subheader("Foreign Exchange (USD Majors)")
-    fig_fx = px.line(df_fx, title="FX Rates", color_discrete_sequence=px.colors.qualitative.Set3)
-    st.plotly_chart(fig_fx, use_container_width=True)
-
-    # ------------------ CORRELATION HEATMAP ------------------
-    st.subheader("Macro Correlation Heatmap")
-    corr = pd.concat([df_rates.pct_change(), df_fx.pct_change()], axis=1).corr()
-
-    fig_corr, ax = plt.subplots(figsize=(8, 6))
-    sns.heatmap(corr, annot=True, cmap="coolwarm", linewidths=0.5, ax=ax)
-    st.pyplot(fig_corr)
-
