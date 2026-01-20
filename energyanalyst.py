@@ -74,7 +74,7 @@ etf_groups = {
 }
 
 # ---------------------------------------------------------
-# MACRO UNIVERSE
+# MACRO UNIVERSE (WORKING TICKERS)
 # ---------------------------------------------------------
 macro_yields = {
     "US 3M (proxy for 2Y)": "^IRX",
@@ -364,10 +364,10 @@ elif section == "Macro Drivers":
         st.warning("No yield data available for the selected period.")
 
     # ---------- US YIELD CURVE SPREADS ----------
-    if all(col in df_yields.columns for col in ["US 2Y", "US 10Y", "US 30Y"]):
+    if all(col in df_yields.columns for col in ["US 3M (proxy for 2Y)", "US 10Y", "US 30Y"]):
         st.subheader("US Yield Curve Spreads")
         spreads = pd.DataFrame({
-            "10Y–2Y": df_yields["US 10Y"] - df_yields["US 2Y"],
+            "10Y–3M": df_yields["US 10Y"] - df_yields["US 3M (proxy for 2Y)"],
             "30Y–10Y": df_yields["US 30Y"] - df_yields["US 10Y"]
         }).dropna()
 
