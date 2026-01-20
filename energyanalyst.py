@@ -228,7 +228,6 @@ def compute_technical_indicators(df):
     return out
 
 def run_prophet_forecast(df, periods=30):
-    # df expected to have columns: Date, Close
     df_prophet = df[["Date", "Close"]].copy()
     df_prophet.columns = ["ds", "y"]
 
@@ -404,34 +403,57 @@ if section == "Prices":
 
                 df_ta = compute_technical_indicators(df)
 
+                # --- PRICE + MOVING AVERAGES ---
                 st.markdown("### Price with Moving Averages")
-                fig_ma = px.line(
-                    df_ta,
-                    x="Date",
-                    y=["Close", "SMA_20", "SMA_50", "EMA_20", "EMA_50"],
-                    title=f"{label_map[ticker]} — Price & Moving Averages"
-                )
-                st.plotly_chart(fig_ma, use_container_width=True)
+                ma_cols = ["Close", "SMA_20", "SMA_50", "EMA_20", "EMA_50"]
+                valid_ma_cols = [
+                    c for c in ma_cols
+                    if c in df_ta.columns and df_ta[c].notna().any()
+                ]
+                if len(valid_ma_cols) == 0:
+                    st.warning("Not enough data to compute moving averages for this ticker.")
+                else:
+                    fig_ma = px.line(
+                        df_ta,
+                        x="Date",
+                        y=valid_ma_cols,
+                        title=f"{label_map[ticker]} — Price & Moving Averages"
+                    )
+                    st.plotly_chart(fig_ma, use_container_width=True)
 
+                # --- RSI ---
                 st.markdown("### Relative Strength Index (RSI)")
-                fig_rsi = px.line(
-                    df_ta,
-                    x="Date",
-                    y="RSI_14",
-                    title=f"{label_map[ticker]} — RSI (14)"
-                )
-                fig_rsi.add_hrect(y0=30, y1=70, fillcolor="lightgray", opacity=0.2)
-                st.plotly_chart(fig_rsi, use_container_width=True)
+                if "RSI_14" in df_ta.columns and df_ta["RSI_14"].notna().any():
+                    fig_rsi = px.line(
+                        df_ta,
+                        x="Date",
+                        y="RSI_14",
+                        title=f"{label_map[ticker]} — RSI (14)"
+                    )
+                    fig_rsi.add_hrect(y0=30, y1=70, fillcolor="lightgray", opacity=0.2)
+                    st.plotly_chart(fig_rsi, use_container_width=True)
+                else:
+                    st.info("Not enough data to compute RSI.")
 
+                # --- MACD ---
                 st.markdown("### MACD")
-                fig_macd = px.line(
-                    df_ta,
-                    x="Date",
-                    y=["MACD", "MACD_signal"],
-                    title=f"{label_map[ticker]} — MACD (12–26–9)"
-                )
-                st.plotly_chart(fig_macd, use_container_width=True)
+                macd_cols = ["MACD", "MACD_signal"]
+                valid_macd_cols = [
+                    c for c in macd_cols
+                    if c in df_ta.columns and df_ta[c].notna().any()
+                ]
+                if len(valid_macd_cols) == 0:
+                    st.info("Not enough data to compute MACD.")
+                else:
+                    fig_macd = px.line(
+                        df_ta,
+                        x="Date",
+                        y=valid_macd_cols,
+                        title=f"{label_map[ticker]} — MACD (12–26–9)"
+                    )
+                    st.plotly_chart(fig_macd, use_container_width=True)
 
+                # --- PROPHET FORECAST ---
                 st.markdown("### Forecast (Prophet)")
                 try:
                     forecast = run_prophet_forecast(df)
@@ -445,6 +467,7 @@ if section == "Prices":
                 except Exception as e:
                     st.error(f"Prophet failed: {e}")
 
+                # --- TERM STRUCTURE PLACEHOLDER ---
                 st.markdown("### Term Structure (Placeholder)")
                 if ticker in ["CL=F", "BZ=F", "NG=F", "RB=F", "HO=F"]:
                     st.info("Term structure for futures will be added in a later update.")
@@ -557,7 +580,7 @@ elif section == "Macro Drivers":
         else:
             st.warning("Not enough macro data to compute correlations.")
 
-    # ---------- EXTENDED MACRO TAB (ADD‑ON)
+    # ---------- EXTENDED MACRO TAB (ADD‑ON) ----------
     with macro_tabs[1]:
         st.subheader("Extended Macro Indicators")
 
