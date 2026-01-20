@@ -194,3 +194,73 @@ elif section == "Equities":
 
 elif section == "ETFs":
     render_page("📊 Energy ETFs", etf_groups)
+
+elif section == "Macro Drivers":
+    st.title("🌍 Macro Drivers")
+
+    # ------------------ DEFINE MACRO SERIES ------------------
+    macro_fred = {
+        "US 2Y Yield": "DGS2",
+        "US 10Y Yield": "DGS10",
+        "US 30Y Yield": "DGS30",
+        "Fed Funds Rate": "FEDFUNDS",
+        "CPI (YoY)": "CPIAUCSL"
+    }
+
+    macro_fx = {
+        "DXY": "DX-Y.NYB",
+        "EUR/USD": "EURUSD=X",
+        "USD/JPY": "JPY=X",
+        "USD/CNY": "CNY=X"
+    }
+
+    # ------------------ FETCH FRED DATA ------------------
+    fred_data = {}
+    for name, series in macro_fred.items():
+        try:
+            df = yf.download(series, start=start_date, end=end_date, progress=False)["Close"]
+            fred_data[name] = df
+        except:
+            pass
+
+    # ------------------ FETCH FX DATA ------------------
+    fx_data = {}
+    for name, ticker in macro_fx.items():
+        try:
+            df = yf.download(ticker, start=start_date, end=end_date, progress=False)["Close"]
+            fx_data[name] = df
+        except:
+            pass
+
+    # ------------------ COMBINE INTO DATAFRAMES ------------------
+    df_rates = pd.DataFrame(fred_data).dropna(how="all")
+    df_fx = pd.DataFrame(fx_data).dropna(how="all")
+
+    # ------------------ RATES & YIELDS ------------------
+    st.subheader("Interest Rates & Yields")
+    fig_rates = px.line(df_rates, title="US Treasury Yields & Fed Funds", color_discrete_sequence=px.colors.qualitative.Set2)
+    st.plotly_chart(fig_rates, use_container_width=True)
+
+    # ------------------ YIELD CURVE SPREADS ------------------
+    st.subheader("Yield Curve Spreads")
+    spreads = pd.DataFrame({
+        "10Y–2Y": df_rates["US 10Y Yield"] - df_rates["US 2Y Yield"],
+        "30Y–10Y": df_rates["US 30Y Yield"] - df_rates["US 10Y Yield"]
+    }).dropna()
+
+    fig_spreads = px.line(spreads, title="Yield Curve Spreads", color_discrete_sequence=px.colors.qualitative.Set1)
+    st.plotly_chart(fig_spreads, use_container_width=True)
+
+    # ------------------ FX ------------------
+    st.subheader("Foreign Exchange (USD Majors)")
+    fig_fx = px.line(df_fx, title="FX Rates", color_discrete_sequence=px.colors.qualitative.Set3)
+    st.plotly_chart(fig_fx, use_container_width=True)
+
+    # ------------------ CORRELATION HEATMAP ------------------
+    st.subheader("Macro Correlation Heatmap")
+    corr = pd.concat([df_rates.pct_change(), df_fx.pct_change()], axis=1).corr()
+
+    fig_corr, ax = plt.subplots(figsize=(8, 6))
+    sns.heatmap(corr, annot=True, cmap="coolwarm", linewidths=0.5, ax=ax)
+    st.pyplot(fig_corr)
+
