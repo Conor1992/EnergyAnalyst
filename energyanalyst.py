@@ -4,9 +4,9 @@ import pandas as pd
 import plotly.express as px
 import seaborn as sns
 import matplotlib.pyplot as plt
-import requests
 from datetime import date, timedelta
 from fredapi import Fred
+from prophet import Prophet
 
 # ---------------------------------------------------------
 # CONFIG
@@ -98,25 +98,6 @@ macro_fx = {
     "GBP/USD": "DEXUSUK",
     "USD/JPY": "DEXJPUS",
     "USD/CNY": "DEXCHUS"
-}
-
-# ---------------------------------------------------------
-# EIA SUPPLY/DEMAND SERIES (CORE OPTION A, US ONLY)
-# ---------------------------------------------------------
-eia_core_series = {
-    # Crude
-    "Crude Production": "PET.WCRFPUS2.W",
-    "Crude Net Imports": "PET.WCRNTUS2.W",
-    "Crude Stocks (Commercial)": "PET.WCESTUS1.W",
-    "SPR Stocks": "PET.WCSSTUS1.W",
-    "Refinery Inputs (Crude Runs)": "PET.WCRRIUS2.W",
-
-    # Total products
-    "Total Products Supplied (Demand)": "PET.WTTSTUS1.W",
-    "Total Stocks (All Products)": "PET.WTTSTUS1.W",  # same ID but interpreted as stocks
-
-    # Refinery utilization
-    "Refinery Utilization": "PET.WPULEUS3.W"
 }
 
 # ---------------------------------------------------------
@@ -220,60 +201,43 @@ def macro_context_table(df):
     return pd.DataFrame(rows, columns=["Series", "Current", "1Y Min", "1Y Max", "1Y Avg"])
 
 # ---------------------------------------------------------
-# HELPERS — EIA (SUPPLY/DEMAND)
+# HELPERS — TECHNICALS / PROPHET
 # ---------------------------------------------------------
-def fetch_eia_series(api_key, series_id):
-    url = f"https://api.eia.gov/series/?api_key={api_key}&series_id={series_id}"
-    r = requests.get(url)
-    if r.status_code != 200:
-        return None
-    js = r.json()
-    if "series" not in js or len(js["series"]) == 0:
-        return None
-    data = js["series"][0]["data"]
-    df = pd.DataFrame(data, columns=["date", "value"])
-    df["date"] = pd.to_datetime(df["date"])
-    df.set_index("date", inplace=True)
-    df = df.sort_index()
-    df["value"] = pd.to_numeric(df["value"], errors="coerce")
-    return df["value"]
+def compute_technical_indicators(df):
+    out = df.copy()
 
-def load_eia_series_dict(api_key, series_dict, start, end):
-    data = {}
-    for name, sid in series_dict.items():
-        try:
-            s = fetch_eia_series(api_key, sid)
-            if s is None or s.empty:
-                continue
-            s = s[(s.index >= pd.to_datetime(start)) & (s.index <= pd.to_datetime(end))]
-            if s.empty:
-                continue
-            data[name] = s
-        except Exception:
-            continue
-    if not data:
-        return pd.DataFrame()
-    return pd.DataFrame(data)
+    out["SMA_20"] = out["Close"].rolling(window=20).mean()
+    out["SMA_50"] = out["Close"].rolling(window=50).mean()
 
-def eia_context_table(df):
-    rows = []
-    for col in df.columns:
-        series = df[col].dropna()
-        if series.empty:
-            continue
-        current = series.iloc[-1]
-        wow = None
-        if len(series) > 1:
-            wow = current - series.iloc[-2]
-        rows.append([
-            col,
-            round(current, 2),
-            round(wow, 2) if wow is not None else None,
-            round(series.mean(), 2),
-            round(series.min(), 2),
-            round(series.max(), 2)
-        ])
-    return pd.DataFrame(rows, columns=["Series", "Latest", "WoW Change", "Avg", "Min", "Max"])
+    out["EMA_20"] = out["Close"].ewm(span=20, adjust=False).mean()
+    out["EMA_50"] = out["Close"].ewm(span=50, adjust=False).mean()
+
+    delta = out["Close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / avg_loss
+    out["RSI_14"] = 100 - (100 / (1 + rs))
+
+    ema12 = out["Close"].ewm(span=12, adjust=False).mean()
+    ema26 = out["Close"].ewm(span=26, adjust=False).mean()
+    out["MACD"] = ema12 - ema26
+    out["MACD_signal"] = out["MACD"].ewm(span=9, adjust=False).mean()
+
+    return out
+
+def run_prophet_forecast(df, periods=30):
+    df_prophet = df.reset_index()[["Date", "Close"]]
+    df_prophet.columns = ["ds", "y"]
+
+    model = Prophet(daily_seasonality=False, weekly_seasonality=True)
+    model.fit(df_prophet)
+
+    future = model.make_future_dataframe(periods=periods)
+    forecast = model.predict(future)
+
+    return forecast
 
 # ---------------------------------------------------------
 # SIDEBAR
@@ -294,12 +258,12 @@ st.sidebar.subheader("Normalization Date (Prices)")
 norm_input = st.sidebar.date_input("Normalize from", date(2022, 3, 1))
 
 # ---------------------------------------------------------
-# PRICES PAGE (YAHOO)
+# PRICES PAGE (YAHOO + TECHNICALS)
 # ---------------------------------------------------------
 if section == "Prices":
     st.title("💰 Prices")
 
-    tabs = st.tabs(["Futures", "Equities", "ETFs"])
+    tabs = st.tabs(["Futures", "Equities", "ETFs", "Historical Price & Technicals"])
 
     # ---------- FUTURES ----------
     with tabs[0]:
@@ -414,6 +378,68 @@ if section == "Prices":
             fig_ct, axt = plt.subplots(figsize=(8, 6))
             sns.heatmap(corr_etf, annot=True, cmap="coolwarm", linewidths=0.5, ax=axt)
             st.pyplot(fig_ct)
+
+    # ---------- HISTORICAL PRICE & TECHNICALS ----------
+    with tabs[3]:
+        st.subheader("Historical Price & Technical Analysis")
+
+        ticker = st.selectbox(
+            "Select a ticker for technical analysis",
+            options=list(label_map.keys()),
+            format_func=lambda x: label_map[x]
+        )
+
+        df = yf.download(ticker, start=start_date, end=end_date, progress=False)
+
+        if df.empty:
+            st.warning("No data available for this ticker.")
+        else:
+            df = df.reset_index()
+            df_ta = compute_technical_indicators(df)
+
+            st.markdown("### Price with Moving Averages")
+            fig_ma = px.line(
+                df_ta,
+                x="Date",
+                y=["Close", "SMA_20", "SMA_50", "EMA_20", "EMA_50"],
+                title=f"{label_map[ticker]} — Price & Moving Averages"
+            )
+            st.plotly_chart(fig_ma, use_container_width=True)
+
+            st.markdown("### Relative Strength Index (RSI)")
+            fig_rsi = px.line(
+                df_ta,
+                x="Date",
+                y="RSI_14",
+                title=f"{label_map[ticker]} — RSI (14)"
+            )
+            fig_rsi.add_hrect(y0=30, y1=70, fillcolor="lightgray", opacity=0.2)
+            st.plotly_chart(fig_rsi, use_container_width=True)
+
+            st.markdown("### MACD")
+            fig_macd = px.line(
+                df_ta,
+                x="Date",
+                y=["MACD", "MACD_signal"],
+                title=f"{label_map[ticker]} — MACD (12–26–9)"
+            )
+            st.plotly_chart(fig_macd, use_container_width=True)
+
+            st.markdown("### Forecast (Prophet)")
+            forecast = run_prophet_forecast(df)
+            fig_fc = px.line(
+                forecast,
+                x="ds",
+                y=["yhat", "yhat_lower", "yhat_upper"],
+                title=f"{label_map[ticker]} — 30‑Day Forecast (Prophet)"
+            )
+            st.plotly_chart(fig_fc, use_container_width=True)
+
+            st.markdown("### Term Structure (Placeholder)")
+            if ticker in ["CL=F", "BZ=F", "NG=F", "RB=F", "HO=F"]:
+                st.info("Term structure for individual futures curves will be added here (per‑contract strip) in a later iteration.")
+            else:
+                st.info("Term structure only applies to futures contracts.")
 
 # ---------------------------------------------------------
 # MACRO DRIVERS PAGE (FRED)
@@ -568,86 +594,29 @@ elif section == "Macro Drivers":
             st.pyplot(fig_ex)
 
 # ---------------------------------------------------------
-# SUPPLY & DEMAND PAGE (EIA, OPTION A)
+# SUPPLY & DEMAND PAGE (PLACEHOLDER)
 # ---------------------------------------------------------
 elif section == "Supply & Demand (EIA)":
     st.title("📦 US Supply & Demand — EIA")
 
-    st.subheader("EIA API Key")
-    eia_key = st.text_input("Enter your EIA API Key", type="password")
+    st.subheader("EIA API Key (Placeholder)")
+    st.text_input("Enter your EIA API Key (not yet used)", type="password")
 
-    if not eia_key:
-        st.warning("Enter your EIA API key to load supply/demand data.")
-        st.stop()
+    st.markdown(
+        """
+        ### Supply & Demand Module — Coming Soon
 
-    st.markdown("### Core US Weekly Supply/Demand Balance (Option A)")
+        This section will host a US crude & products supply/demand model built on the EIA v2 API.
 
-    df_eia = load_eia_series_dict(eia_key, eia_core_series, start_date, end_date)
+        Planned features:
 
-    if df_eia.empty:
-        st.warning("No EIA data available for the selected period or invalid API key/permissions.")
-        st.stop()
+        - Weekly crude production, net imports, refinery runs  
+        - Total products supplied (demand) and total stocks  
+        - Simple supply vs demand balance  
+        - Stocks vs implied stock change  
+        - Correlation heatmaps across S&D components  
 
-    st.markdown("#### Core Time Series")
-    fig_eia = px.line(
-        df_eia,
-        title="US Crude & Products — Core Weekly Series",
-        color_discrete_sequence=px.colors.qualitative.Set2
+        For now, this page is a placeholder while the EIA v2 integration is finalized.
+        """
     )
-    st.plotly_chart(fig_eia, use_container_width=True)
-
-    st.markdown("#### Latest Weekly Snapshot & Context")
-    eia_ctx = eia_context_table(df_eia)
-    st.dataframe(eia_ctx, use_container_width=True)
-
-    # Simple balance: Supply vs Demand
-    st.markdown("### Simple Balance — Supply vs Demand")
-
-    balance_df = pd.DataFrame(index=df_eia.index)
-
-    if "Crude Production" in df_eia.columns:
-        balance_df["Production"] = df_eia["Crude Production"]
-    if "Crude Net Imports" in df_eia.columns:
-        balance_df["Net Imports"] = df_eia["Crude Net Imports"]
-    if "Refinery Inputs (Crude Runs)" in df_eia.columns:
-        balance_df["Refinery Runs"] = df_eia["Refinery Inputs (Crude Runs)"]
-    if "Total Products Supplied (Demand)" in df_eia.columns:
-        balance_df["Total Demand (Products Supplied)"] = df_eia["Total Products Supplied (Demand)"]
-
-    if not balance_df.empty:
-        if all(col in balance_df.columns for col in ["Production", "Net Imports"]):
-            balance_df["Total Crude Supply"] = balance_df["Production"] + balance_df["Net Imports"]
-
-        st.markdown("#### Supply vs Demand Time Series")
-        fig_bal = px.line(
-            balance_df,
-            title="US Supply/Demand Components",
-            color_discrete_sequence=px.colors.qualitative.Set1
-        )
-        st.plotly_chart(fig_bal, use_container_width=True)
-
-    # Stocks vs implied change (very simple proxy)
-    if "Total Stocks (All Products)" in df_eia.columns and "Total Products Supplied (Demand)" in df_eia.columns:
-        st.markdown("### Stocks vs Implied Change (Simple Proxy)")
-
-        stocks = df_eia["Total Stocks (All Products)"].dropna()
-        implied_change = df_eia["Total Products Supplied (Demand)"].diff(-1) * -1  # rough proxy
-
-        stocks_df = pd.DataFrame({
-            "Total Stocks": stocks,
-            "Implied Stock Change (Proxy)": implied_change
-        }).dropna()
-
-        fig_stocks = px.line(
-            stocks_df,
-            title="Total Stocks vs Implied Stock Change (Proxy)",
-            color_discrete_sequence=px.colors.qualitative.Set3
-        )
-        st.plotly_chart(fig_stocks, use_container_width=True)
-
-    st.markdown("### Supply/Demand Correlation Heatmap")
-    corr_eia = df_eia.pct_change().corr()
-    fig_eh, ax_eh = plt.subplots(figsize=(10, 8))
-    sns.heatmap(corr_eia, annot=True, cmap="coolwarm", linewidths=0.5, ax=ax_eh)
-    st.pyplot(fig_eh)
 
