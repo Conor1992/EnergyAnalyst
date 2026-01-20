@@ -5,6 +5,7 @@ import plotly.express as px
 import seaborn as sns
 import matplotlib.pyplot as plt
 from datetime import date, timedelta
+from fredapi import Fred
 
 # ---------------------------------------------------------
 # CONFIG
@@ -74,28 +75,28 @@ etf_groups = {
 }
 
 # ---------------------------------------------------------
-# MACRO UNIVERSE (WORKING TICKERS)
+# MACRO UNIVERSE (FRED CODES — CORE SET)
 # ---------------------------------------------------------
-macro_yields = {
-    "US 3M (proxy for 2Y)": "^IRX",
-    "US 10Y": "^TNX",      # divide by 10
-    "US 30Y": "^TYX",      # divide by 10
-    "UK 10Y": "^UK10Y",
-    "Germany 10Y": "^DE10Y",
-    "France 10Y": "^FR10Y",
-    "Japan 10Y": "^JP10Y"
+macro_us = {
+    "US 2Y": "DGS2",
+    "US 10Y": "DGS10",
+    "US 30Y": "DGS30",
+    "Fed Funds": "FEDFUNDS",
+    "CPI (Index)": "CPIAUCSL"
+}
+
+macro_global_yields = {
+    "Germany 10Y": "IRLTLT01DEM156N",
+    "France 10Y": "IRLTLT01FRM156N",
+    "UK 10Y": "IRLTLT01GBM156N",
+    "Japan 10Y": "IRLTLT01JPM156N"
 }
 
 macro_fx = {
-    "DXY": "DX-Y.NYB",
-    "EUR/USD": "EURUSD=X",
-    "USD/JPY": "JPY=X",
-    "USD/CNY": "CNY=X",
-    "GBP/USD": "GBPUSD=X"
-}
-
-macro_policy = {
-    "Fed Funds Futures (proxy)": "ZQ=F"
+    "EUR/USD": "DEXUSEU",
+    "GBP/USD": "DEXUSUK",
+    "USD/JPY": "DEXJPUS",
+    "USD/CNY": "DEXCHUS"
 }
 
 # ---------------------------------------------------------
@@ -163,23 +164,21 @@ def grouped_performance_table(groups):
     return pd.concat(frames, ignore_index=True)
 
 # ---------------------------------------------------------
-# HELPERS — MACRO
+# HELPERS — MACRO (FRED)
 # ---------------------------------------------------------
-def load_macro_series(series_dict, start, end):
+def load_fred_series(fred, series_dict, start, end):
     data = {}
-    for name, ticker in series_dict.items():
+    for name, code in series_dict.items():
         try:
-            df = yf.download(ticker, start=start, end=end, progress=False)["Close"]
-            if df is None or df.empty:
-                continue
-            if ticker in ["^TNX", "^TYX"]:
-                df = df / 10.0
-            data[name] = df
+            s = fred.get_series(code)
+            s = s[(s.index >= pd.to_datetime(start)) & (s.index <= pd.to_datetime(end))]
+            if not s.empty:
+                data[name] = s
         except Exception:
             continue
     if not data:
         return pd.DataFrame()
-    return pd.DataFrame(data).dropna(how="all")
+    return pd.DataFrame(data)
 
 def macro_context_table(df):
     rows = []
@@ -216,7 +215,7 @@ st.sidebar.subheader("Normalization Date (Prices)")
 norm_input = st.sidebar.date_input("Normalize from", date(2022, 3, 1))
 
 # ---------------------------------------------------------
-# PRICES PAGE
+# PRICES PAGE (YAHOO)
 # ---------------------------------------------------------
 if section == "Prices":
     st.title("💰 Prices")
@@ -338,83 +337,135 @@ if section == "Prices":
             st.pyplot(fig_ct)
 
 # ---------------------------------------------------------
-# MACRO DRIVERS PAGE
+# MACRO DRIVERS PAGE (FRED)
 # ---------------------------------------------------------
 elif section == "Macro Drivers":
     st.title("🌍 Macro Drivers")
 
-    df_yields = load_macro_series(macro_yields, start_date, end_date)
-    df_fx = load_macro_series(macro_fx, start_date, end_date)
-    df_policy = load_macro_series(macro_policy, start_date, end_date)
+    # API key input
+    st.subheader("FRED API Key")
+    fred_key = st.text_input("Enter your FRED API Key", type="password")
 
-    # ---------- RATES & YIELDS ----------
-    st.subheader("Rates & Yields (US, UK, Germany, France, Japan)")
-    if not df_yields.empty:
-        fig_yields = px.line(
-            df_yields,
-            title="Sovereign Yields",
-            color_discrete_sequence=px.colors.qualitative.Set2
+    if not fred_key:
+        st.warning("Enter your FRED API key to load macro data.")
+        st.stop()
+
+    try:
+        fred = Fred(api_key=fred_key)
+    except Exception:
+        st.error("Invalid FRED API key. Please check and try again.")
+        st.stop()
+
+    macro_tabs = st.tabs(["Core Macro (Option A)", "Extended Macro (Coming Soon)"])
+
+    # ---------- CORE MACRO TAB ----------
+    with macro_tabs[0]:
+        st.subheader("Core Macro — Yields, FX, Policy, Inflation")
+
+        # US yields, Fed Funds, CPI
+        df_us = load_fred_series(fred, macro_us, start_date, end_date)
+        # Global yields
+        df_global = load_fred_series(fred, macro_global_yields, start_date, end_date)
+        # FX
+        df_fx = load_fred_series(fred, macro_fx, start_date, end_date)
+
+        # US Yields & Fed Funds
+        st.markdown("### US Rates & Yields")
+        if not df_us.empty:
+            fig_us = px.line(
+                df_us[["US 2Y", "US 10Y", "US 30Y", "Fed Funds"]],
+                title="US Yields & Fed Funds",
+                color_discrete_sequence=px.colors.qualitative.Set2
+            )
+            st.plotly_chart(fig_us, use_container_width=True)
+
+            st.markdown("#### US Rates — Historical Context (1Y)")
+            us_context = macro_context_table(df_us[["US 2Y", "US 10Y", "US 30Y", "Fed Funds"]])
+            st.dataframe(us_context, use_container_width=True)
+        else:
+            st.warning("No US macro data available for the selected period.")
+
+        # Global Yields
+        st.markdown("### Global 10Y Yields (Germany, France, UK, Japan)")
+        if not df_global.empty:
+            fig_global = px.line(
+                df_global,
+                title="Global 10Y Yields",
+                color_discrete_sequence=px.colors.qualitative.Set1
+            )
+            st.plotly_chart(fig_global, use_container_width=True)
+
+            st.markdown("#### Global Yields — Historical Context (1Y)")
+            global_context = macro_context_table(df_global)
+            st.dataframe(global_context, use_container_width=True)
+        else:
+            st.warning("No global yield data available for the selected period.")
+
+        # FX
+        st.markdown("### FX — USD Majors (FRED DEX Series)")
+        if not df_fx.empty:
+            fig_fx = px.line(
+                df_fx,
+                title="FX Rates (FRED DEX)",
+                color_discrete_sequence=px.colors.qualitative.Set3
+            )
+            st.plotly_chart(fig_fx, use_container_width=True)
+
+            st.markdown("#### FX — Historical Context (1Y)")
+            fx_context = macro_context_table(df_fx)
+            st.dataframe(fx_context, use_container_width=True)
+        else:
+            st.warning("No FX data available for the selected period.")
+
+        # US Yield Curve Spreads
+        if all(col in df_us.columns for col in ["US 2Y", "US 10Y", "US 30Y"]):
+            st.markdown("### US Yield Curve Spreads")
+            spreads = pd.DataFrame({
+                "10Y–2Y": df_us["US 10Y"] - df_us["US 2Y"],
+                "30Y–10Y": df_us["US 30Y"] - df_us["US 10Y"]
+            }).dropna()
+
+            fig_spreads = px.line(
+                spreads,
+                title="US Yield Curve Spreads",
+                color_discrete_sequence=px.colors.qualitative.Set1
+            )
+            st.plotly_chart(fig_spreads, use_container_width=True)
+
+        # Macro Correlation Heatmap
+        st.markdown("### Macro Correlation Heatmap")
+        macro_combined = pd.concat(
+            [
+                df_us[["US 2Y", "US 10Y", "US 30Y", "Fed Funds"]].pct_change(),
+                df_global.pct_change(),
+                df_fx.pct_change()
+            ],
+            axis=1
+        ).dropna(how="all")
+
+        if not macro_combined.empty:
+            corr_macro = macro_combined.corr()
+            fig_mc, axm = plt.subplots(figsize=(10, 8))
+            sns.heatmap(corr_macro, annot=True, cmap="coolwarm", linewidths=0.5, ax=axm)
+            st.pyplot(fig_mc)
+        else:
+            st.warning("Not enough macro data to compute correlations.")
+
+    # ---------- EXTENDED MACRO TAB (COMING SOON) ----------
+    with macro_tabs[1]:
+        st.subheader("Extended Macro — Coming Soon")
+        st.markdown(
+            """
+            This tab will host extended macro content, such as:
+
+            - Credit spreads (HY OAS, IG OAS)  
+            - Growth indicators (GDP, industrial production, retail sales)  
+            - Labour market (unemployment, participation)  
+            - PMIs (manufacturing, services)  
+            - Housing (starts, permits, prices)  
+            - Inflation expectations (5Y5Y, breakevens)  
+
+            The structure is ready — we’ll wire in additional FRED series here when you’re ready to expand.
+            """
         )
-        st.plotly_chart(fig_yields, use_container_width=True)
 
-        st.subheader("Yields — Historical Context (1Y)")
-        yields_context = macro_context_table(df_yields)
-        st.dataframe(yields_context, use_container_width=True)
-    else:
-        st.warning("No yield data available for the selected period.")
-
-    # ---------- US YIELD CURVE SPREADS ----------
-    if all(col in df_yields.columns for col in ["US 3M (proxy for 2Y)", "US 10Y", "US 30Y"]):
-        st.subheader("US Yield Curve Spreads")
-        spreads = pd.DataFrame({
-            "10Y–3M": df_yields["US 10Y"] - df_yields["US 3M (proxy for 2Y)"],
-            "30Y–10Y": df_yields["US 30Y"] - df_yields["US 10Y"]
-        }).dropna()
-
-        fig_spreads = px.line(
-            spreads,
-            title="US Yield Curve Spreads",
-            color_discrete_sequence=px.colors.qualitative.Set1
-        )
-        st.plotly_chart(fig_spreads, use_container_width=True)
-
-    # ---------- FX ----------
-    st.subheader("FX — USD Majors")
-    if not df_fx.empty:
-        fig_fx = px.line(
-            df_fx,
-            title="FX Rates",
-            color_discrete_sequence=px.colors.qualitative.Set3
-        )
-        st.plotly_chart(fig_fx, use_container_width=True)
-
-        st.subheader("FX — Historical Context (1Y)")
-        fx_context = macro_context_table(df_fx)
-        st.dataframe(fx_context, use_container_width=True)
-    else:
-        st.warning("No FX data available for the selected period.")
-
-    # ---------- POLICY (PROXY) ----------
-    if not df_policy.empty:
-        st.subheader("Policy Rate Proxy (Fed Funds Futures)")
-        fig_pol = px.line(
-            df_policy,
-            title="Fed Funds Futures (Proxy)",
-            color_discrete_sequence=px.colors.qualitative.Set2
-        )
-        st.plotly_chart(fig_pol, use_container_width=True)
-
-    # ---------- MACRO CORRELATION HEATMAP ----------
-    st.subheader("Macro Correlation Heatmap")
-    macro_combined = pd.concat(
-        [df_yields.pct_change(), df_fx.pct_change(), df_policy.pct_change()],
-        axis=1
-    ).dropna(how="all")
-
-    if not macro_combined.empty:
-        corr_macro = macro_combined.corr()
-        fig_mc, axm = plt.subplots(figsize=(10, 8))
-        sns.heatmap(corr_macro, annot=True, cmap="coolwarm", linewidths=0.5, ax=axm)
-        st.pyplot(fig_mc)
-    else:
-        st.warning("Not enough macro data to compute correlations.")
