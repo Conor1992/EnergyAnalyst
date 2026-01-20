@@ -6,7 +6,6 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from datetime import date, timedelta
 from fredapi import Fred
-from prophet import Prophet
 
 # ---------------------------------------------------------
 # CONFIG
@@ -201,7 +200,7 @@ def macro_context_table(df):
     return pd.DataFrame(rows, columns=["Series", "Current", "1Y Min", "1Y Max", "1Y Avg"])
 
 # ---------------------------------------------------------
-# HELPERS — TECHNICALS / PROPHET
+# HELPERS — TECHNICALS
 # ---------------------------------------------------------
 def compute_technical_indicators(df):
     out = df.copy()
@@ -227,25 +226,13 @@ def compute_technical_indicators(df):
 
     return out
 
-def run_prophet_forecast(df, periods=30):
-    df_prophet = df[["Date", "Close"]].copy()
-    df_prophet.columns = ["ds", "y"]
-
-    model = Prophet(daily_seasonality=False, weekly_seasonality=True)
-    model.fit(df_prophet)
-
-    future = model.make_future_dataframe(periods=periods)
-    forecast = model.predict(future)
-
-    return forecast
-
 # ---------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------
 st.sidebar.title("Energy Dashboard MVP")
 section = st.sidebar.radio(
     "Select Section",
-    ["Prices", "Macro Drivers", "Supply & Demand (EIA)"]
+    ["Prices", "Pricing & Historical", "Macro Drivers", "Supply & Demand (EIA)"]
 )
 
 st.sidebar.subheader("Date Range")
@@ -258,12 +245,12 @@ st.sidebar.subheader("Normalization Date (Prices)")
 norm_input = st.sidebar.date_input("Normalize from", date(2022, 3, 1))
 
 # ---------------------------------------------------------
-# PRICES PAGE (YAHOO + TECHNICALS)
+# PRICES PAGE (YAHOO)
 # ---------------------------------------------------------
 if section == "Prices":
     st.title("💰 Prices")
 
-    tabs = st.tabs(["Futures", "Equities", "ETFs", "Historical Price & Technicals"])
+    tabs = st.tabs(["Futures", "Equities", "ETFs"])
 
     # ---------- FUTURES ----------
     with tabs[0]:
@@ -379,114 +366,88 @@ if section == "Prices":
             sns.heatmap(corr_etf, annot=True, cmap="coolwarm", linewidths=0.5, ax=axt)
             st.pyplot(fig_ct)
 
-    # ---------- HISTORICAL PRICE & TECHNICALS ----------
-    with tabs[3]:
-        st.subheader("Historical Price & Technical Analysis")
+# ---------------------------------------------------------
+# PRICING & HISTORICAL (TECHNICALS, NO PROPHET, NO DROPDOWN)
+# ---------------------------------------------------------
+elif section == "Pricing & Historical":
+    st.title("📈 Pricing & Historical Technicals")
 
-        ticker = st.selectbox(
-            "Select a ticker for technical analysis",
-            options=list(label_map.keys()),
-            format_func=lambda x: label_map[x]
-        )
+    st.markdown("""
+    This section automatically loads historical prices for key futures
+    and computes technical indicators including:
+    - Moving Averages (SMA20, SMA50, EMA20, EMA50)
+    - RSI (14)
+    - MACD (12–26–9)
+    """)
+
+    tech_tickers = ["CL=F", "BZ=F", "NG=F", "RB=F", "HO=F"]
+
+    for ticker in tech_tickers:
+        st.subheader(f"{label_map[ticker]} ({ticker})")
 
         df = yf.download(ticker, start=start_date, end=end_date, progress=False)
 
         if df.empty:
-            st.warning("No data available for this ticker.")
+            st.warning(f"No data available for {label_map[ticker]}")
+            st.markdown("---")
+            continue
+
+        df = df.rename(columns=str.title)
+        if "Close" not in df.columns:
+            st.warning(f"No 'Close' column for {label_map[ticker]}")
+            st.markdown("---")
+            continue
+
+        df = df.reset_index()
+        df_ta = compute_technical_indicators(df)
+
+        # PRICE + MAs
+        st.markdown("**Price & Moving Averages**")
+        ma_cols = ["Close", "SMA_20", "SMA_50", "EMA_20", "EMA_50"]
+        valid_ma_cols = [c for c in ma_cols if c in df_ta.columns and df_ta[c].notna().any()]
+
+        if valid_ma_cols:
+            fig_ma = px.line(
+                df_ta,
+                x="Date",
+                y=valid_ma_cols,
+                title=f"{label_map[ticker]} — Price & MAs"
+            )
+            st.plotly_chart(fig_ma, use_container_width=True)
         else:
-            df = df.rename(columns=str.title)  # 'close' -> 'Close'
-            if "Close" not in df.columns:
-                st.error("Downloaded data does not contain a 'Close' column.")
-            else:
-                df = df.reset_index()  # ensure Date column
-                df_ta = compute_technical_indicators(df)
+            st.info("Not enough data for moving averages.")
 
-                # --- PRICE + MOVING AVERAGES ---
-                st.markdown("### Price with Moving Averages")
-                ma_cols = ["Close", "SMA_20", "SMA_50", "EMA_20", "EMA_50"]
-                valid_ma_cols = []
-                for c in ma_cols:
-                    if c in df_ta.columns:
-                        col = df_ta[c]
-                        try:
-                            if col.notna().any():
-                                valid_ma_cols.append(c)
-                        except Exception:
-                            continue
+        # RSI
+        st.markdown("**RSI (14)**")
+        if "RSI_14" in df_ta.columns and df_ta["RSI_14"].notna().any():
+            fig_rsi = px.line(
+                df_ta,
+                x="Date",
+                y="RSI_14",
+                title=f"{label_map[ticker]} — RSI (14)"
+            )
+            fig_rsi.add_hrect(y0=30, y1=70, fillcolor="lightgray", opacity=0.2)
+            st.plotly_chart(fig_rsi, use_container_width=True)
+        else:
+            st.info("Not enough data for RSI.")
 
-                if not valid_ma_cols:
-                    st.warning("Not enough data to compute moving averages for this ticker.")
-                else:
-                    fig_ma = px.line(
-                        df_ta,
-                        x="Date",
-                        y=valid_ma_cols,
-                        title=f"{label_map[ticker]} — Price & Moving Averages"
-                    )
-                    st.plotly_chart(fig_ma, use_container_width=True)
+        # MACD
+        st.markdown("**MACD (12–26–9)**")
+        macd_cols = ["MACD", "MACD_signal"]
+        valid_macd_cols = [c for c in macd_cols if c in df_ta.columns and df_ta[c].notna().any()]
 
-                # --- RSI ---
-                st.markdown("### Relative Strength Index (RSI)")
-                if "RSI_14" in df_ta.columns:
-                    col = df_ta["RSI_14"]
-                    if col.notna().any():
-                        fig_rsi = px.line(
-                            df_ta,
-                            x="Date",
-                            y="RSI_14",
-                            title=f"{label_map[ticker]} — RSI (14)"
-                        )
-                        fig_rsi.add_hrect(y0=30, y1=70, fillcolor="lightgray", opacity=0.2)
-                        st.plotly_chart(fig_rsi, use_container_width=True)
-                    else:
-                        st.info("Not enough data to compute RSI.")
-                else:
-                    st.info("RSI not available for this ticker.")
+        if valid_macd_cols:
+            fig_macd = px.line(
+                df_ta,
+                x="Date",
+                y=valid_macd_cols,
+                title=f"{label_map[ticker]} — MACD"
+            )
+            st.plotly_chart(fig_macd, use_container_width=True)
+        else:
+            st.info("Not enough data for MACD.")
 
-                # --- MACD ---
-                st.markdown("### MACD")
-                macd_cols = ["MACD", "MACD_signal"]
-                valid_macd_cols = []
-                for c in macd_cols:
-                    if c in df_ta.columns:
-                        col = df_ta[c]
-                        try:
-                            if col.notna().any():
-                                valid_macd_cols.append(c)
-                        except Exception:
-                            continue
-
-                if not valid_macd_cols:
-                    st.info("Not enough data to compute MACD.")
-                else:
-                    fig_macd = px.line(
-                        df_ta,
-                        x="Date",
-                        y=valid_macd_cols,
-                        title=f"{label_map[ticker]} — MACD (12–26–9)"
-                    )
-                    st.plotly_chart(fig_macd, use_container_width=True)
-
-                # --- PROPHET FORECAST ---
-                st.markdown("### Forecast (Prophet)")
-                try:
-                    forecast = run_prophet_forecast(df)
-                    fig_fc = px.line(
-                        forecast,
-                        x="ds",
-                        y=["yhat", "yhat_lower", "yhat_upper"],
-                        title=f"{label_map[ticker]} — 30‑Day Forecast (Prophet)"
-                    )
-                    st.plotly_chart(fig_fc, use_container_width=True)
-                except Exception as e:
-                    st.error(f"Prophet failed: {e}")
-
-                # --- TERM STRUCTURE PLACEHOLDER ---
-                st.markdown("### Term Structure (Placeholder)")
-                if ticker in ["CL=F", "BZ=F", "NG=F", "RB=F", "HO=F"]:
-                    st.info("Term structure for futures will be added in a later update.")
-                else:
-                    st.info("Term structure only applies to futures contracts.")
+        st.markdown("---")
 
 # ---------------------------------------------------------
 # MACRO DRIVERS PAGE (FRED)
@@ -509,7 +470,7 @@ elif section == "Macro Drivers":
 
     macro_tabs = st.tabs(["Core Macro (Option A)", "Extended Macro (Add‑On)"])
 
-    # ---------- CORE MACRO TAB ----------
+    # CORE MACRO
     with macro_tabs[0]:
         st.subheader("Core Macro — Yields, FX, Policy, Inflation")
 
@@ -594,7 +555,7 @@ elif section == "Macro Drivers":
         else:
             st.warning("Not enough macro data to compute correlations.")
 
-    # ---------- EXTENDED MACRO TAB (ADD‑ON) ----------
+    # EXTENDED MACRO
     with macro_tabs[1]:
         st.subheader("Extended Macro Indicators")
 
