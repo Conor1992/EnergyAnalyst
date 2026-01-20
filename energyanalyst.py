@@ -6,7 +6,6 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from datetime import date, timedelta
 from fredapi import Fred
-from prophet import Prophet
 
 # ---------------------------------------------------------
 # CONFIG
@@ -201,52 +200,10 @@ def macro_context_table(df):
     return pd.DataFrame(rows, columns=["Series", "Current", "1Y Min", "1Y Max", "1Y Avg"])
 
 # ---------------------------------------------------------
-# HELPERS — TECHNICALS / PROPHET
-# ---------------------------------------------------------
-def compute_technical_indicators(df):
-    out = df.copy()
-
-    out["SMA_20"] = out["Close"].rolling(window=20).mean()
-    out["SMA_50"] = out["Close"].rolling(window=50).mean()
-
-    out["EMA_20"] = out["Close"].ewm(span=20, adjust=False).mean()
-    out["EMA_50"] = out["Close"].ewm(span=50, adjust=False).mean()
-
-    delta = out["Close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-    rs = avg_gain / avg_loss
-    out["RSI_14"] = 100 - (100 / (1 + rs))
-
-    ema12 = out["Close"].ewm(span=12, adjust=False).mean()
-    ema26 = out["Close"].ewm(span=26, adjust=False).mean()
-    out["MACD"] = ema12 - ema26
-    out["MACD_signal"] = out["MACD"].ewm(span=9, adjust=False).mean()
-
-    return out
-
-def run_prophet_forecast(df, periods=30):
-    df_prophet = df[["Date", "Close"]].copy()
-    df_prophet.columns = ["ds", "y"]
-
-    model = Prophet(daily_seasonality=False, weekly_seasonality=True)
-    model.fit(df_prophet)
-
-    future = model.make_future_dataframe(periods=periods)
-    forecast = model.predict(future)
-
-    return forecast
-
-# ---------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------
 st.sidebar.title("Energy Dashboard MVP")
-section = st.sidebar.radio(
-    "Select Section",
-    ["Prices", "Macro Drivers", "Supply & Demand (EIA)"]
-)
+section = st.sidebar.radio("Select Section", ["Prices", "Macro Drivers"])
 
 st.sidebar.subheader("Date Range")
 default_start = date.today() - timedelta(days=365)
@@ -258,12 +215,12 @@ st.sidebar.subheader("Normalization Date (Prices)")
 norm_input = st.sidebar.date_input("Normalize from", date(2022, 3, 1))
 
 # ---------------------------------------------------------
-# PRICES PAGE (YAHOO + TECHNICALS)
+# PRICES PAGE (YAHOO)
 # ---------------------------------------------------------
 if section == "Prices":
     st.title("💰 Prices")
 
-    tabs = st.tabs(["Futures", "Equities", "ETFs", "Historical Price & Technicals"])
+    tabs = st.tabs(["Futures", "Equities", "ETFs"])
 
     # ---------- FUTURES ----------
     with tabs[0]:
@@ -379,107 +336,13 @@ if section == "Prices":
             sns.heatmap(corr_etf, annot=True, cmap="coolwarm", linewidths=0.5, ax=axt)
             st.pyplot(fig_ct)
 
-    # ---------- HISTORICAL PRICE & TECHNICALS ----------
-    with tabs[3]:
-        st.subheader("Historical Price & Technical Analysis")
-
-        ticker = st.selectbox(
-            "Select a ticker for technical analysis",
-            options=list(label_map.keys()),
-            format_func=lambda x: label_map[x]
-        )
-
-        df = yf.download(ticker, start=start_date, end=end_date, progress=False)
-
-        if df.empty:
-            st.warning("No data available for this ticker.")
-        else:
-            # Standardize column names and reset index
-            df = df.rename(columns=str.title)  # 'close' -> 'Close'
-            if "Close" not in df.columns:
-                st.error("Downloaded data does not contain a 'Close' column.")
-            else:
-                df = df.reset_index()  # Date column
-
-                df_ta = compute_technical_indicators(df)
-
-                # --- PRICE + MOVING AVERAGES ---
-                st.markdown("### Price with Moving Averages")
-                ma_cols = ["Close", "SMA_20", "SMA_50", "EMA_20", "EMA_50"]
-                valid_ma_cols = [
-                    c for c in ma_cols
-                    if c in df_ta.columns and df_ta[c].notna().any()
-                ]
-                if len(valid_ma_cols) == 0:
-                    st.warning("Not enough data to compute moving averages for this ticker.")
-                else:
-                    fig_ma = px.line(
-                        df_ta,
-                        x="Date",
-                        y=valid_ma_cols,
-                        title=f"{label_map[ticker]} — Price & Moving Averages"
-                    )
-                    st.plotly_chart(fig_ma, use_container_width=True)
-
-                # --- RSI ---
-                st.markdown("### Relative Strength Index (RSI)")
-                if "RSI_14" in df_ta.columns and df_ta["RSI_14"].notna().any():
-                    fig_rsi = px.line(
-                        df_ta,
-                        x="Date",
-                        y="RSI_14",
-                        title=f"{label_map[ticker]} — RSI (14)"
-                    )
-                    fig_rsi.add_hrect(y0=30, y1=70, fillcolor="lightgray", opacity=0.2)
-                    st.plotly_chart(fig_rsi, use_container_width=True)
-                else:
-                    st.info("Not enough data to compute RSI.")
-
-                # --- MACD ---
-                st.markdown("### MACD")
-                macd_cols = ["MACD", "MACD_signal"]
-                valid_macd_cols = [
-                    c for c in macd_cols
-                    if c in df_ta.columns and df_ta[c].notna().any()
-                ]
-                if len(valid_macd_cols) == 0:
-                    st.info("Not enough data to compute MACD.")
-                else:
-                    fig_macd = px.line(
-                        df_ta,
-                        x="Date",
-                        y=valid_macd_cols,
-                        title=f"{label_map[ticker]} — MACD (12–26–9)"
-                    )
-                    st.plotly_chart(fig_macd, use_container_width=True)
-
-                # --- PROPHET FORECAST ---
-                st.markdown("### Forecast (Prophet)")
-                try:
-                    forecast = run_prophet_forecast(df)
-                    fig_fc = px.line(
-                        forecast,
-                        x="ds",
-                        y=["yhat", "yhat_lower", "yhat_upper"],
-                        title=f"{label_map[ticker]} — 30‑Day Forecast (Prophet)"
-                    )
-                    st.plotly_chart(fig_fc, use_container_width=True)
-                except Exception as e:
-                    st.error(f"Prophet failed: {e}")
-
-                # --- TERM STRUCTURE PLACEHOLDER ---
-                st.markdown("### Term Structure (Placeholder)")
-                if ticker in ["CL=F", "BZ=F", "NG=F", "RB=F", "HO=F"]:
-                    st.info("Term structure for futures will be added in a later update.")
-                else:
-                    st.info("Term structure only applies to futures contracts.")
-
 # ---------------------------------------------------------
 # MACRO DRIVERS PAGE (FRED)
 # ---------------------------------------------------------
 elif section == "Macro Drivers":
     st.title("🌍 Macro Drivers")
 
+    # API key input
     st.subheader("FRED API Key")
     fred_key = st.text_input("Enter your FRED API Key", type="password")
 
@@ -493,16 +356,20 @@ elif section == "Macro Drivers":
         st.error("Invalid FRED API key. Please check and try again.")
         st.stop()
 
-    macro_tabs = st.tabs(["Core Macro (Option A)", "Extended Macro (Add‑On)"])
+    macro_tabs = st.tabs(["Core Macro (Option A)", "Extended Macro (Coming Soon)"])
 
     # ---------- CORE MACRO TAB ----------
     with macro_tabs[0]:
         st.subheader("Core Macro — Yields, FX, Policy, Inflation")
 
+        # US yields, Fed Funds, CPI
         df_us = load_fred_series(fred, macro_us, start_date, end_date)
+        # Global yields
         df_global = load_fred_series(fred, macro_global_yields, start_date, end_date)
+        # FX
         df_fx = load_fred_series(fred, macro_fx, start_date, end_date)
 
+        # US Yields & Fed Funds
         st.markdown("### US Rates & Yields")
         if not df_us.empty:
             fig_us = px.line(
@@ -518,6 +385,7 @@ elif section == "Macro Drivers":
         else:
             st.warning("No US macro data available for the selected period.")
 
+        # Global Yields
         st.markdown("### Global 10Y Yields (Germany, France, UK, Japan)")
         if not df_global.empty:
             fig_global = px.line(
@@ -533,6 +401,7 @@ elif section == "Macro Drivers":
         else:
             st.warning("No global yield data available for the selected period.")
 
+        # FX
         st.markdown("### FX — USD Majors (FRED DEX Series)")
         if not df_fx.empty:
             fig_fx = px.line(
@@ -548,6 +417,7 @@ elif section == "Macro Drivers":
         else:
             st.warning("No FX data available for the selected period.")
 
+        # US Yield Curve Spreads
         if all(col in df_us.columns for col in ["US 2Y", "US 10Y", "US 30Y"]):
             st.markdown("### US Yield Curve Spreads")
             spreads = pd.DataFrame({
@@ -562,6 +432,7 @@ elif section == "Macro Drivers":
             )
             st.plotly_chart(fig_spreads, use_container_width=True)
 
+        # Macro Correlation Heatmap
         st.markdown("### Macro Correlation Heatmap")
         macro_combined = pd.concat(
             [
@@ -580,76 +451,20 @@ elif section == "Macro Drivers":
         else:
             st.warning("Not enough macro data to compute correlations.")
 
-    # ---------- EXTENDED MACRO TAB (ADD‑ON) ----------
+    # ---------- EXTENDED MACRO TAB (COMING SOON) ----------
     with macro_tabs[1]:
-        st.subheader("Extended Macro Indicators")
-
+        st.subheader("Extended Macro — Coming Soon")
         st.markdown(
-            "These indicators are optional add‑ons powered by FRED. "
-            "They expand the macro view into credit, growth, labour markets, PMIs, and inflation expectations."
+            """
+            This tab will host extended macro content, such as:
+
+            - Credit spreads (HY OAS, IG OAS)  
+            - Growth indicators (GDP, industrial production, retail sales)  
+            - Labour market (unemployment, participation)  
+            - PMIs (manufacturing, services)  
+            - Housing (starts, permits, prices)  
+            - Inflation expectations (5Y5Y, breakevens)  
+
+            The structure is ready — we’ll wire in additional FRED series here when you’re ready to expand.
+            """
         )
-
-        extended_macro = {
-            "HY OAS": "BAMLH0A0HYM2EY",
-            "IG OAS": "BAMLC0A0CM",
-            "Real GDP": "GDPC1",
-            "Industrial Production": "INDPRO",
-            "Retail Sales": "RSAFS",
-            "Unemployment Rate": "UNRATE",
-            "Job Openings (JOLTS)": "JTSJOL",
-            "ISM Manufacturing PMI": "NAPM",
-            "ISM Services PMI": "NAPMS",
-            "5Y5Y Inflation Expectations": "T5YIFR",
-            "10Y Breakeven Inflation": "T10YIE"
-        }
-
-        df_ext = load_fred_series(fred, extended_macro, start_date, end_date)
-
-        if df_ext.empty:
-            st.warning("No extended macro data available for the selected period.")
-        else:
-            st.markdown("### Extended Macro — Time Series")
-            fig_ext = px.line(
-                df_ext,
-                title="Extended Macro Indicators",
-                color_discrete_sequence=px.colors.qualitative.Set2
-            )
-            st.plotly_chart(fig_ext, use_container_width=True)
-
-            st.markdown("### Extended Macro — Historical Context (1Y)")
-            ext_context = macro_context_table(df_ext)
-            st.dataframe(ext_context, use_container_width=True)
-
-            st.markdown("### Extended Macro — Correlation Heatmap")
-            corr_ext = df_ext.pct_change().corr()
-            fig_ex, ax_ex = plt.subplots(figsize=(10, 8))
-            sns.heatmap(corr_ext, annot=True, cmap="coolwarm", linewidths=0.5, ax=ax_ex)
-            st.pyplot(fig_ex)
-
-# ---------------------------------------------------------
-# SUPPLY & DEMAND PAGE (PLACEHOLDER)
-# ---------------------------------------------------------
-elif section == "Supply & Demand (EIA)":
-    st.title("📦 US Supply & Demand — EIA")
-
-    st.subheader("EIA API Key (Placeholder)")
-    st.text_input("Enter your EIA API Key (not yet used)", type="password")
-
-    st.markdown(
-        """
-        ### Supply & Demand Module — Coming Soon
-
-        This section will host a US crude & products supply/demand model built on the EIA v2 API.
-
-        Planned features:
-
-        - Weekly crude production, net imports, refinery runs  
-        - Total products supplied (demand) and total stocks  
-        - Simple supply vs demand balance  
-        - Stocks vs implied stock change  
-        - Correlation heatmaps across S&D components  
-
-        For now, this page is a placeholder while the EIA v2 integration is finalized.
-        """
-    )
-
