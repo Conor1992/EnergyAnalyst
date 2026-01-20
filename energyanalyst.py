@@ -29,8 +29,11 @@ fred = Fred(api_key=FRED_API_KEY)
 # HELPERS
 # -----------------------------
 def yahoo_price(ticker):
-    data = yf.download(ticker, period="1y")
-    return data["Close"]
+    df = yf.download(ticker, period="1y", progress=False)
+    if df is None or df.empty:
+        return None
+    return df["Close"]
+
 
 def fred_series(series_id):
     return fred.get_series(series_id)
@@ -63,10 +66,13 @@ if section == "Executive Summary":
     wti = yahoo_price("CL=F")
     brent = yahoo_price("BZ=F")
 
-    col1, col2, col3 = st.columns(3)
-    kpi("WTI", f"${wti.iloc[-1]:.2f}", f"{(wti.pct_change().iloc[-1]*100):.2f}%")
-    kpi("Brent", f"${brent.iloc[-1]:.2f}", f"{(brent.pct_change().iloc[-1]*100):.2f}%")
-    kpi("Brent–WTI", f"${(brent.iloc[-1] - wti.iloc[-1]):.2f}")
+    if wti is None or brent is None:
+         st.error("Yahoo Finance returned no data. Try again later or check ticker symbols.")
+    else:
+        col1, col2, col3 = st.columns(3)
+        kpi("WTI", f"${wti.iloc[-1]:.2f}", f"{(wti.pct_change().iloc[-1]*100):.2f}%")
+        kpi("Brent", f"${brent.iloc[-1]:.2f}", f"{(brent.iloc[-1] - wti.iloc[-1]):.2f}")
+
 
     st.markdown("---")
     st.subheader("Price Chart")
