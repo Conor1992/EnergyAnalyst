@@ -394,23 +394,27 @@ if section == "Prices":
         if df.empty:
             st.warning("No data available for this ticker.")
         else:
-            # Standardize column names and reset index
             df = df.rename(columns=str.title)  # 'close' -> 'Close'
             if "Close" not in df.columns:
                 st.error("Downloaded data does not contain a 'Close' column.")
             else:
-                df = df.reset_index()  # Date column
-
+                df = df.reset_index()  # ensure Date column
                 df_ta = compute_technical_indicators(df)
 
                 # --- PRICE + MOVING AVERAGES ---
                 st.markdown("### Price with Moving Averages")
                 ma_cols = ["Close", "SMA_20", "SMA_50", "EMA_20", "EMA_50"]
-                valid_ma_cols = [
-                    c for c in ma_cols
-                    if c in df_ta.columns and df_ta[c].notna().any()
-                ]
-                if len(valid_ma_cols) == 0:
+                valid_ma_cols = []
+                for c in ma_cols:
+                    if c in df_ta.columns:
+                        col = df_ta[c]
+                        try:
+                            if col.notna().any():
+                                valid_ma_cols.append(c)
+                        except Exception:
+                            continue
+
+                if not valid_ma_cols:
                     st.warning("Not enough data to compute moving averages for this ticker.")
                 else:
                     fig_ma = px.line(
@@ -423,26 +427,36 @@ if section == "Prices":
 
                 # --- RSI ---
                 st.markdown("### Relative Strength Index (RSI)")
-                if "RSI_14" in df_ta.columns and df_ta["RSI_14"].notna().any():
-                    fig_rsi = px.line(
-                        df_ta,
-                        x="Date",
-                        y="RSI_14",
-                        title=f"{label_map[ticker]} — RSI (14)"
-                    )
-                    fig_rsi.add_hrect(y0=30, y1=70, fillcolor="lightgray", opacity=0.2)
-                    st.plotly_chart(fig_rsi, use_container_width=True)
+                if "RSI_14" in df_ta.columns:
+                    col = df_ta["RSI_14"]
+                    if col.notna().any():
+                        fig_rsi = px.line(
+                            df_ta,
+                            x="Date",
+                            y="RSI_14",
+                            title=f"{label_map[ticker]} — RSI (14)"
+                        )
+                        fig_rsi.add_hrect(y0=30, y1=70, fillcolor="lightgray", opacity=0.2)
+                        st.plotly_chart(fig_rsi, use_container_width=True)
+                    else:
+                        st.info("Not enough data to compute RSI.")
                 else:
-                    st.info("Not enough data to compute RSI.")
+                    st.info("RSI not available for this ticker.")
 
                 # --- MACD ---
                 st.markdown("### MACD")
                 macd_cols = ["MACD", "MACD_signal"]
-                valid_macd_cols = [
-                    c for c in macd_cols
-                    if c in df_ta.columns and df_ta[c].notna().any()
-                ]
-                if len(valid_macd_cols) == 0:
+                valid_macd_cols = []
+                for c in macd_cols:
+                    if c in df_ta.columns:
+                        col = df_ta[c]
+                        try:
+                            if col.notna().any():
+                                valid_macd_cols.append(c)
+                        except Exception:
+                            continue
+
+                if not valid_macd_cols:
                     st.info("Not enough data to compute MACD.")
                 else:
                     fig_macd = px.line(
