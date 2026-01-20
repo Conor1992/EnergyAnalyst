@@ -2,6 +2,8 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.express as px
+import seaborn as sns
+import matplotlib.pyplot as plt
 from datetime import date, timedelta
 
 # ---------------------------------------------------------
@@ -10,9 +12,49 @@ from datetime import date, timedelta
 st.set_page_config(page_title="Energy Dashboard MVP", layout="wide")
 
 # ---------------------------------------------------------
-# GROUPED UNIVERSE DEFINITIONS
+# HUMAN‑READABLE LABELS
 # ---------------------------------------------------------
+label_map = {
+    # Futures
+    "CL=F": "WTI Crude",
+    "BZ=F": "Brent Crude",
+    "RB=F": "RBOB Gasoline",
+    "HO=F": "Heating Oil",
+    "NG=F": "Henry Hub NatGas",
+    "EH=F": "Ethanol",
 
+    # Equities
+    "XOM": "Exxon Mobil",
+    "CVX": "Chevron",
+    "BP": "BP",
+    "SHEL": "Shell",
+    "TTE": "TotalEnergies",
+    "PXD": "Pioneer",
+    "EOG": "EOG Resources",
+    "CLR": "Continental Resources",
+    "DVN": "Devon Energy",
+    "SLB": "Schlumberger",
+    "HAL": "Halliburton",
+    "BKR": "Baker Hughes",
+    "VLO": "Valero",
+    "MPC": "Marathon Petroleum",
+    "PSX": "Phillips 66",
+    "ENB": "Enbridge",
+    "KMI": "Kinder Morgan",
+    "WMB": "Williams",
+
+    # ETFs
+    "XOP": "S&P Oil & Gas E&P ETF",
+    "IEO": "iShares Oil & Gas E&P",
+    "XLE": "Energy Select Sector SPDR",
+    "VDE": "Vanguard Energy ETF",
+    "OIH": "Oil Services ETF",
+    "AMLP": "Alerian MLP ETF"
+}
+
+# ---------------------------------------------------------
+# GROUPED UNIVERSE
+# ---------------------------------------------------------
 futures_groups = {
     "Crude Oil": ["CL=F", "BZ=F"],
     "Refined Products": ["RB=F", "HO=F"],
@@ -38,11 +80,11 @@ etf_groups = {
 # ---------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------
-
 def load_prices(tickers, start, end):
     df = yf.download(tickers, start=start, end=end, progress=False)["Close"]
     if isinstance(df, pd.Series):
         df = df.to_frame()
+    df = df.rename(columns=label_map)
     return df.dropna(how="all")
 
 def normalize(df):
@@ -50,7 +92,6 @@ def normalize(df):
 
 def performance_table(tickers):
     today = date.today()
-
     lookbacks = {
         "1D": today - timedelta(days=1),
         "1M": today - timedelta(days=30),
@@ -62,16 +103,19 @@ def performance_table(tickers):
     if isinstance(df, pd.Series):
         df = df.to_frame()
 
+    df = df.rename(columns=label_map)
     results = []
 
     for ticker in tickers:
-        series = df[ticker].dropna()
+        name = label_map[ticker]
+        series = df[name].dropna()
+
         if series.empty:
-            results.append([ticker, None, None, None, None])
+            results.append([name, None, None, None, None])
             continue
 
         last_price = series.iloc[-1]
-        row = [ticker]
+        row = [name]
 
         for _, start_date in lookbacks.items():
             past = series[series.index >= pd.to_datetime(start_date)]
@@ -83,7 +127,7 @@ def performance_table(tickers):
 
         results.append(row)
 
-    return pd.DataFrame(results, columns=["Ticker", "1D %", "1M %", "3M %", "12M %"])
+    return pd.DataFrame(results, columns=["Name", "1D %", "1M %", "3M %", "12M %"])
 
 def grouped_performance_table(groups):
     frames = []
@@ -96,12 +140,8 @@ def grouped_performance_table(groups):
 # ---------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------
-
 st.sidebar.title("Energy Dashboard MVP")
-section = st.sidebar.radio(
-    "Select Section",
-    ["Futures", "Equities", "ETFs"]
-)
+section = st.sidebar.radio("Select Section", ["Futures", "Equities", "ETFs"])
 
 st.sidebar.subheader("Date Range")
 default_start = date.today() - timedelta(days=365)
@@ -111,79 +151,47 @@ start_date = st.sidebar.date_input("Start", default_start)
 end_date = st.sidebar.date_input("End", default_end)
 
 # ---------------------------------------------------------
-# FUTURES PAGE
+# PAGE TEMPLATE
 # ---------------------------------------------------------
+def render_page(title, groups):
+    st.title(title)
 
-if section == "Futures":
-    st.title("🛢️ Futures Prices")
-
-    tickers = sum(futures_groups.values(), [])
+    tickers = sum(groups.values(), [])
     df = load_prices(tickers, start_date, end_date)
 
     col_left, col_right = st.columns([2, 1])
 
+    # ------------------ LEFT SIDE: CHARTS ------------------
     with col_left:
         st.subheader("Price Levels")
-        fig = px.line(df, title="Energy Futures Prices")
+        fig = px.line(df, title=f"{title} — Price Levels", color_discrete_sequence=px.colors.qualitative.Set2)
         st.plotly_chart(fig, use_container_width=True)
 
         st.subheader("Normalized Performance")
-        fig2 = px.line(normalize(df), title="Futures Performance")
+        fig2 = px.line(normalize(df), title=f"{title} — Normalized (100 = Start)", color_discrete_sequence=px.colors.qualitative.Set1)
         st.plotly_chart(fig2, use_container_width=True)
 
+        st.subheader("Correlation Heatmap")
+        corr = df.pct_change().corr()
+
+        fig3, ax = plt.subplots(figsize=(8, 6))
+        sns.heatmap(corr, annot=True, cmap="coolwarm", linewidths=0.5, ax=ax)
+        st.pyplot(fig3)
+
+    # ------------------ RIGHT SIDE: PERFORMANCE TABLE ------------------
     with col_right:
         st.subheader("Performance Table")
-        table = grouped_performance_table(futures_groups)
+        table = grouped_performance_table(groups)
         st.dataframe(table, use_container_width=True)
 
 # ---------------------------------------------------------
-# EQUITIES PAGE
+# ROUTING
 # ---------------------------------------------------------
+if section == "Futures":
+    render_page("🛢️ Futures", futures_groups)
 
 elif section == "Equities":
-    st.title("📈 Energy Equities")
-
-    tickers = sum(equity_groups.values(), [])
-    df = load_prices(tickers, start_date, end_date)
-
-    col_left, col_right = st.columns([2, 1])
-
-    with col_left:
-        st.subheader("Price Levels")
-        fig = px.line(df, title="Energy Equities Prices")
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.subheader("Normalized Performance")
-        fig2 = px.line(normalize(df), title="Equities Performance")
-        st.plotly_chart(fig2, use_container_width=True)
-
-    with col_right:
-        st.subheader("Performance Table")
-        table = grouped_performance_table(equity_groups)
-        st.dataframe(table, use_container_width=True)
-
-# ---------------------------------------------------------
-# ETFs PAGE
-# ---------------------------------------------------------
+    render_page("📈 Energy Equities", equity_groups)
 
 elif section == "ETFs":
-    st.title("📊 Energy ETFs")
-
-    tickers = sum(etf_groups.values(), [])
-    df = load_prices(tickers, start_date, end_date)
-
-    col_left, col_right = st.columns([2, 1])
-
-    with col_left:
-        st.subheader("Price Levels")
-        fig = px.line(df, title="Energy ETFs Prices")
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.subheader("Normalized Performance")
-        fig2 = px.line(normalize(df), title="ETF Performance")
-        st.plotly_chart(fig2, use_container_width=True)
-
-    with col_right:
-        st.subheader("Performance Table")
-        table = grouped_performance_table(etf_groups)
-        st.dataframe(table, use_container_width=True)
+    render_page("📊 Energy ETFs", etf_groups)
