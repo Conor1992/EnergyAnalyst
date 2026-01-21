@@ -86,24 +86,36 @@ def load_data():
 data = load_data()
 
 # ---------------------------------------------------------
-# 4. Date Range Slider
+# 4. User-Defined Start Date
 # ---------------------------------------------------------
 
 min_date = data.index.min()
 max_date = data.index.max()
 
+user_start_date = st.sidebar.date_input(
+    "Select start date",
+    value=min_date,
+    min_value=min_date,
+    max_value=max_date
+)
+
+# ---------------------------------------------------------
+# 5. Date Range Slider (respects start date)
+# ---------------------------------------------------------
+
 date_range = st.sidebar.slider(
     "Select date range",
-    min_value=min_date.to_pydatetime(),
+    min_value=user_start_date,
     max_value=max_date.to_pydatetime(),
-    value=(min_date.to_pydatetime(), max_date.to_pydatetime())
+    value=(user_start_date, max_date.to_pydatetime())
 )
 
 def filter_by_date(series):
-    return series.loc[date_range[0]:date_range[1]]
+    s = series.loc[user_start_date:]
+    return s.loc[date_range[0]:date_range[1]]
 
 # ---------------------------------------------------------
-# 5. Extract Close Series (filtered)
+# 6. Extract Close Series (filtered)
 # ---------------------------------------------------------
 
 def extract_close_series(ticker):
@@ -114,7 +126,7 @@ def extract_close_series(ticker):
         return pd.Series(dtype=float)
 
 # ---------------------------------------------------------
-# 6. Normalization
+# 7. Normalization
 # ---------------------------------------------------------
 
 def normalize(series, method="first", base_value=100):
@@ -135,7 +147,7 @@ def normalize_to_date(series, base_date, base_value=100):
     return (series / series.loc[base_date]) * base_value
 
 # ---------------------------------------------------------
-# 7. Plotting Functions
+# 8. Plotting Functions
 # ---------------------------------------------------------
 
 def plot_price_group(tickers, title):
@@ -162,7 +174,7 @@ def plot_normalized_group(tickers, title, method="first", base_value=100):
     return fig
 
 # ---------------------------------------------------------
-# 8. Custom ETF Index
+# 9. Custom ETF Index
 # ---------------------------------------------------------
 
 def create_custom_index(tickers, base_value=100):
@@ -175,7 +187,7 @@ def create_custom_index(tickers, base_value=100):
     return index_series["Custom_Index"], base_date
 
 # ---------------------------------------------------------
-# 9. Heatmap
+# 10. Heatmap
 # ---------------------------------------------------------
 
 def plot_category_heatmap(tickers, title):
@@ -188,7 +200,7 @@ def plot_category_heatmap(tickers, title):
     return fig
 
 # ---------------------------------------------------------
-# 10. Return Table
+# 11. Return Table
 # ---------------------------------------------------------
 
 def compute_return_table(tickers):
@@ -212,7 +224,7 @@ def compute_return_table(tickers):
     return pd.DataFrame(rows).set_index("Name")
 
 # ---------------------------------------------------------
-# 11. Sidebar Controls
+# 12. Sidebar Controls
 # ---------------------------------------------------------
 
 norm_choice = st.sidebar.selectbox(
@@ -222,9 +234,9 @@ norm_choice = st.sidebar.selectbox(
 
 index_start_date = st.sidebar.slider(
     "Index to 100 starting at:",
-    min_value=min_date.to_pydatetime(),
+    min_value=user_start_date,
     max_value=max_date.to_pydatetime(),
-    value=min_date.to_pydatetime()
+    value=user_start_date
 )
 
 show_heatmap = st.sidebar.checkbox("Show correlation heatmap", True)
@@ -232,13 +244,13 @@ show_returns = st.sidebar.checkbox("Show return table", True)
 show_custom_index = st.sidebar.checkbox("Show custom ETF index", True)
 
 # ---------------------------------------------------------
-# 12. Tabs
+# 13. Tabs
 # ---------------------------------------------------------
 
 tab_futures, tab_etfs, tab_equities = st.tabs(["Futures", "ETFs", "Equities"])
 
 # ---------------------------------------------------------
-# 13. Tab Renderer
+# 14. Tab Renderer
 # ---------------------------------------------------------
 
 def render_tab(tickers, title, show_index=False):
@@ -297,7 +309,7 @@ def render_tab(tickers, title, show_index=False):
         ))
 
 # ---------------------------------------------------------
-# 14. Render Tabs
+# 15. Render Tabs
 # ---------------------------------------------------------
 
 with tab_futures:
