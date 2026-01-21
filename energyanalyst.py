@@ -76,34 +76,50 @@ ticker_names = {
 
 @st.cache_data(show_spinner=True)
 def load_data():
-    data = yf.download(
+    return yf.download(
         all_tickers,
         auto_adjust=True,
         progress=False,
         group_by="ticker"
     )
-    return data
 
 data = load_data()
 
 # ---------------------------------------------------------
-# 4. Extract Close Series
+# 4. Date Range Slider
+# ---------------------------------------------------------
+
+min_date = data.index.min()
+max_date = data.index.max()
+
+date_range = st.sidebar.slider(
+    "Select date range",
+    min_value=min_date.to_pydatetime(),
+    max_value=max_date.to_pydatetime(),
+    value=(min_date.to_pydatetime(), max_date.to_pydatetime())
+)
+
+def filter_by_date(series):
+    return series.loc[date_range[0]:date_range[1]]
+
+# ---------------------------------------------------------
+# 5. Extract Close Series (filtered)
 # ---------------------------------------------------------
 
 def extract_close_series(ticker):
     try:
-        return data[ticker]["Close"].dropna()
-    except Exception:
+        s = data[ticker]["Close"].dropna()
+        return filter_by_date(s)
+    except:
         return pd.Series(dtype=float)
 
 # ---------------------------------------------------------
-# 5. Normalization Methods
+# 6. Normalization
 # ---------------------------------------------------------
 
 def normalize(series, method="first", base_value=100):
     if series.empty:
         return series
-
     if method == "first":
         return series / series.iloc[0]
     elif method == "minmax":
@@ -112,11 +128,14 @@ def normalize(series, method="first", base_value=100):
         return (series - series.mean()) / series.std()
     elif method == "custom_base":
         return (series / series.iloc[0]) * base_value
-    else:
-        raise ValueError("Unknown normalization method")
+
+def normalize_to_date(series, base_date, base_value=100):
+    if base_date not in series.index:
+        base_date = series.index[0]
+    return (series / series.loc[base_date]) * base_value
 
 # ---------------------------------------------------------
-# 6. Plotting Functions
+# 7. Plotting Functions
 # ---------------------------------------------------------
 
 def plot_price_group(tickers, title):
@@ -126,181 +145,166 @@ def plot_price_group(tickers, title):
         if not s.empty:
             ax.plot(s, label=ticker_names.get(t, t))
     ax.set_title(title)
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Price")
     ax.grid(True, alpha=0.3)
     ax.legend()
-    fig.tight_layout()
     return fig
 
-def plot_normalized_group(tickers, title, norm_method="first", base_value=100):
+def plot_normalized_group(tickers, title, method="first", base_value=100):
     fig, ax = plt.subplots(figsize=(12, 6))
     for t in tickers:
         s = extract_close_series(t)
         if not s.empty:
-            s_norm = normalize(s, method=norm_method, base_value=base_value)
+            s_norm = normalize(s, method=method, base_value=base_value)
             ax.plot(s_norm, label=ticker_names.get(t, t))
-    ax.set_title(f"{title} (Normalized: {norm_method})")
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Normalized Value")
+    ax.set_title(f"{title} (Normalized: {method})")
     ax.grid(True, alpha=0.3)
     ax.legend()
-    fig.tight_layout()
     return fig
 
 # ---------------------------------------------------------
-# 7. Index Creator (Auto Base Date)
+# 8. Custom ETF Index
 # ---------------------------------------------------------
 
 def create_custom_index(tickers, base_value=100):
     df = pd.DataFrame({t: extract_close_series(t) for t in tickers})
-    df = df.dropna(how="all")
-
-    df_common = df.dropna()
-    if df_common.empty:
-        return pd.Series(dtype=float)
-
-    common_start = df_common.index.min()
-    base_prices = df.loc[common_start]
-
+    df = df.dropna()
+    base_date = df.index.min()
+    base_prices = df.loc[base_date]
     index_series = (df / base_prices) * base_value
     index_series["Custom_Index"] = index_series.mean(axis=1)
-
-    return index_series["Custom_Index"], common_start
+    return index_series["Custom_Index"], base_date
 
 # ---------------------------------------------------------
-# 8. Category-Specific Correlation Heatmaps
+# 9. Heatmap
 # ---------------------------------------------------------
 
 def plot_category_heatmap(tickers, title):
     df = pd.DataFrame({ticker_names.get(t, t): extract_close_series(t) for t in tickers})
     df = df.dropna(axis=1, how="all")
-
     corr = df.pct_change().corr().round(1)
-
     fig, ax = plt.subplots(figsize=(10, 7))
-    sns.heatmap(
-        corr,
-        annot=True,
-        fmt=".1f",
-        cmap="coolwarm",
-        linewidths=0.5,
-        square=True,
-        ax=ax
-    )
+    sns.heatmap(corr, annot=True, cmap="coolwarm", linewidths=0.5, square=True, ax=ax)
     ax.set_title(f"{title} — Correlation Heatmap")
-    fig.tight_layout()
     return fig
 
 # ---------------------------------------------------------
-# 9. Return Tables
+# 10. Return Table
 # ---------------------------------------------------------
 
 def compute_return_table(tickers):
     rows = []
-
     for t in tickers:
         s = extract_close_series(t)
         if s.empty:
             continue
-
         current = s.iloc[-1]
-
-        def safe_return(series, periods):
+        def safe_ret(series, periods):
             if len(series) > periods:
                 return (series.iloc[-1] / series.iloc[-periods] - 1) * 100
             return np.nan
-
-        weekly = safe_return(s, 5)
-        monthly = safe_return(s, 21)
-        yearly = safe_return(s, 252)
-
         rows.append({
             "Name": ticker_names.get(t, t),
             "Current Price": round(current, 2),
-            "Weekly % Change": weekly,
-            "Monthly % Change": monthly,
-            "Yearly % Change": yearly
+            "Weekly %": safe_ret(s, 5),
+            "Monthly %": safe_ret(s, 21),
+            "Yearly %": safe_ret(s, 252)
         })
-
-    df = pd.DataFrame(rows)
-    df = df.set_index("Name")
-    return df
+    return pd.DataFrame(rows).set_index("Name")
 
 # ---------------------------------------------------------
-# 10. Streamlit App Layout
+# 11. Sidebar Controls
 # ---------------------------------------------------------
-
-st.title("Energy Market Overview Dashboard")
-
-group = st.sidebar.selectbox(
-    "Select asset group",
-    ["Futures", "ETFs", "Equities"]
-)
 
 norm_choice = st.sidebar.selectbox(
     "Price view",
-    ["Raw Prices", "Normalized (first)", "Normalized (minmax)", "Normalized (zscore)", "Normalized (base=100)"]
+    ["Raw Prices", "Normalized (first)", "Normalized (minmax)", "Normalized (zscore)", "Indexed to 100 (custom date)"]
 )
 
-show_heatmap = st.sidebar.checkbox("Show correlation heatmap", value=True)
-show_returns = st.sidebar.checkbox("Show return table", value=True)
-show_custom_index = st.sidebar.checkbox("Show custom index (ETFs only)", value=True)
+index_start_date = st.sidebar.slider(
+    "Index to 100 starting at:",
+    min_value=min_date.to_pydatetime(),
+    max_value=max_date.to_pydatetime(),
+    value=min_date.to_pydatetime()
+)
 
-if group == "Futures":
-    tickers = futures
-    title = "Energy Futures"
-elif group == "ETFs":
-    tickers = etfs
-    title = "Energy ETFs"
-else:
-    tickers = equities
-    title = "Energy Equities"
+show_heatmap = st.sidebar.checkbox("Show correlation heatmap", True)
+show_returns = st.sidebar.checkbox("Show return table", True)
+show_custom_index = st.sidebar.checkbox("Show custom ETF index", True)
 
-st.subheader(f"{title} — Price View")
+# ---------------------------------------------------------
+# 12. Tabs
+# ---------------------------------------------------------
 
-if norm_choice == "Raw Prices":
-    fig = plot_price_group(tickers, f"{title} Prices")
-else:
-    if norm_choice == "Normalized (first)":
-        method = "first"
-        base = 100
+tab_futures, tab_etfs, tab_equities = st.tabs(["Futures", "ETFs", "Equities"])
+
+# ---------------------------------------------------------
+# 13. Tab Renderer
+# ---------------------------------------------------------
+
+def render_tab(tickers, title, show_index=False):
+
+    st.subheader(f"{title} — Price View")
+
+    # Price plot
+    if norm_choice == "Raw Prices":
+        fig = plot_price_group(tickers, f"{title} Prices")
+
+    elif norm_choice == "Normalized (first)":
+        fig = plot_normalized_group(tickers, title, method="first")
+
     elif norm_choice == "Normalized (minmax)":
-        method = "minmax"
-        base = 100
+        fig = plot_normalized_group(tickers, title, method="minmax")
+
     elif norm_choice == "Normalized (zscore)":
-        method = "zscore"
-        base = 100
-    else:
-        method = "custom_base"
-        base = 100
-    fig = plot_normalized_group(tickers, title, norm_method=method, base_value=base)
+        fig = plot_normalized_group(tickers, title, method="zscore")
 
-st.pyplot(fig)
+    elif norm_choice == "Indexed to 100 (custom date)":
+        fig, ax = plt.subplots(figsize=(12, 6))
+        for t in tickers:
+            s = extract_close_series(t)
+            if not s.empty:
+                s_norm = normalize_to_date(s, index_start_date)
+                ax.plot(s_norm, label=ticker_names.get(t, t))
+        ax.set_title(f"{title} (Indexed to 100 at {index_start_date.date()})")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
 
-if group == "ETFs" and show_custom_index:
-    st.subheader("Custom ETF Index")
-    custom_index, base_date = create_custom_index(etfs)
-    if not custom_index.empty:
+    st.pyplot(fig)
+
+    # Custom ETF index
+    if show_index:
+        st.subheader("Custom ETF Index")
+        idx, base_date = create_custom_index(tickers)
         fig_idx, ax = plt.subplots(figsize=(12, 4))
-        ax.plot(custom_index, label="Custom ETF Index")
+        ax.plot(idx, label="Custom ETF Index")
         ax.set_title(f"Custom ETF Index (Base Date: {base_date.date()})")
         ax.grid(True, alpha=0.3)
         ax.legend()
-        fig_idx.tight_layout()
         st.pyplot(fig_idx)
 
-if show_heatmap:
-    st.subheader(f"{title} — Correlation Heatmap")
-    fig_hm = plot_category_heatmap(tickers, title)
-    st.pyplot(fig_hm)
+    # Heatmap
+    if show_heatmap:
+        st.subheader(f"{title} — Correlation Heatmap")
+        st.pyplot(plot_category_heatmap(tickers, title))
 
-if show_returns:
-    st.subheader(f"{title} — Return Table")
-    returns_df = compute_return_table(tickers)
-    st.dataframe(
-        returns_df.style.format("{:.2f}").background_gradient(
-            subset=["Weekly % Change", "Monthly % Change", "Yearly % Change"],
+    # Return table
+    if show_returns:
+        st.subheader(f"{title} — Return Table")
+        df = compute_return_table(tickers)
+        st.dataframe(df.style.format("{:.2f}").background_gradient(
+            subset=["Weekly %", "Monthly %", "Yearly %"],
             cmap="RdYlGn"
-        )
-    )
+        ))
+
+# ---------------------------------------------------------
+# 14. Render Tabs
+# ---------------------------------------------------------
+
+with tab_futures:
+    render_tab(futures, "Energy Futures")
+
+with tab_etfs:
+    render_tab(etfs, "Energy ETFs", show_index=True)
+
+with tab_equities:
+    render_tab(equities, "Energy Equities")
