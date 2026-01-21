@@ -409,7 +409,6 @@ def run_multifactor_regression(macro_df, wti_series, selected_macros, horizon=5)
     if df_reg.empty:
         return None
 
-    # Standardize predictors
     X_raw = df_reg.drop(columns=["future_ret"])
     X = (X_raw - X_raw.mean()) / X_raw.std()
     X = sm.add_constant(X)
@@ -463,14 +462,12 @@ def fit_arimax(price_series, exog_df, order=(1,1,1), steps=10):
     s = price_series.dropna()
     if s.empty:
         return None, None
-    # Align exogenous with price
     exog = exog_df.reindex(s.index).fillna(method="ffill").dropna()
     s = s.loc[exog.index]
     if len(s) < 50:
         return None, None
     model = ARIMA(s, order=order, exog=exog)
     res = model.fit()
-    # Forecast exog: hold last value constant
     last_exog = exog.iloc[-1:]
     exog_fc = pd.concat([last_exog] * steps)
     fc = res.get_forecast(steps=steps, exog=exog_fc)
@@ -489,7 +486,7 @@ def fit_garch_x(return_series, exog_df, p=1, o=0, q=1, dist="normal", steps=10):
     if len(r) < 200:
         return None, None
     am = arch_model(
-        r * 100,  # scale to percent
+        r * 100,
         mean="Constant",
         vol="GARCH",
         p=p,
@@ -792,10 +789,10 @@ with tab_technicals:
 
     # MACD
     st.subheader("MACD")
-    macd, signal_line, hist = compute_macd(price_series)
-    macd = pd.Series(macd, index=price_series.index)
-    signal_line = pd.Series(signal_line, index=price_series.index)
-    hist = pd.Series(hist, index=price_series.index)
+    macd_raw, signal_raw, hist_raw = compute_macd(price_series)
+    macd = pd.Series(np.asarray(macd_raw).reshape(-1), index=price_series.index)
+    signal_line = pd.Series(np.asarray(signal_raw).reshape(-1), index=price_series.index)
+    hist = pd.Series(np.asarray(hist_raw).reshape(-1), index=price_series.index)
     macd_df = pd.DataFrame({
         "MACD": macd,
         "Signal": signal_line,
