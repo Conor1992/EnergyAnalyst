@@ -80,7 +80,8 @@ def load_data():
         all_tickers,
         auto_adjust=True,
         progress=False,
-        group_by="ticker"
+        group_by="ticker",
+        start="2000-01-01"   # <-- FIXED: ensures long history
     )
 
 data = load_data()
