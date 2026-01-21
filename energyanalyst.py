@@ -441,12 +441,28 @@ def run_rolling_regression(macro_series, wti_series, window=252, horizon=5):
 # ---------------------------------------------------------
 
 def compute_rsi(series, window=14):
+    # Price differences
     delta = series.diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
-    roll_up = pd.Series(gain, index=series.index).rolling(window).mean()
-    roll_down = pd.Series(loss, index=series.index).rolling(window).mean()
-    rs = roll_up / roll_down
+
+    # Force to 1‑D numpy array
+    delta_np = np.asarray(delta).reshape(-1)
+
+    # Gains and losses
+    gain = np.where(delta_np > 0, delta_np, 0)
+    loss = np.where(delta_np < 0, -delta_np, 0)
+
+    # Back to Series with correct index
+    gain_s = pd.Series(gain, index=series.index)
+    loss_s = pd.Series(loss, index=series.index)
+
+    # Rolling averages
+    roll_up = gain_s.rolling(window).mean()
+    roll_down = loss_s.rolling(window).mean()
+
+    # Avoid division by zero
+    rs = roll_up / roll_down.replace(0, np.nan)
+
+    # RSI
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
@@ -805,6 +821,7 @@ with tab_technicals:
     # RSI
     st.subheader("RSI (14)")
     rsi = compute_rsi(price_series, window=14)
+    rsi = pd.Series(np.asarray(rsi).reshape(-1), index=price_series.index)
     fig_rsi = px.line(rsi, title="RSI (14)", labels={"value": "RSI", "index": "Date"})
     fig_rsi.add_hline(y=70, line_dash="dash", line_color="red")
     fig_rsi.add_hline(y=30, line_dash="dash", line_color="green")
