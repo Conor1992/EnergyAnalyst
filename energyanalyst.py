@@ -76,7 +76,7 @@ ticker_names = {
 }
 
 # ---------------------------------------------------------
-# 2. ENERGY PRICE DATA (CACHED)
+# 2. ENERGY PRICE DATA
 # ---------------------------------------------------------
 
 @st.cache_data(show_spinner=True)
@@ -96,18 +96,6 @@ max_date = data.index.max()
 
 min_dt = pd.to_datetime(min_date).to_pydatetime()
 max_dt = pd.to_datetime(max_date).to_pydatetime()
-
-# Unified single-ticker loader (always returns a Series)
-@st.cache_data(show_spinner=True)
-def load_single_ticker(ticker, start="2000-01-01"):
-    df = yf.download(ticker, start=start, auto_adjust=True, progress=False)
-    if "Close" in df.columns:
-        s = df["Close"].dropna()
-    else:
-        s = df.squeeze().dropna()
-    if isinstance(s, pd.DataFrame):
-        s = s.iloc[:, 0]
-    return s
 
 # ---------------------------------------------------------
 # 3. MACRO EXPLANATIONS
@@ -786,11 +774,11 @@ with tab_technicals:
         ["CL=F"] + equities + etfs
     )
 
-    price_series = load_single_ticker(modeling_ticker)
+    @st.cache_data(show_spinner=True)
+    def load_single_ticker(ticker):
+        return yf.download(ticker, start="2000-01-01", auto_adjust=True, progress=False)["Close"].dropna()
 
-    # Ensure Series
-    if isinstance(price_series, pd.DataFrame):
-        price_series = price_series.squeeze()
+    price_series = load_single_ticker(modeling_ticker)
 
     st.subheader(f"Price Series — {ticker_names.get(modeling_ticker, modeling_ticker)}")
     fig_price = px.line(price_series, title="Price History", labels={"value": "Price", "index": "Date"})
@@ -822,7 +810,7 @@ with tab_technicals:
     fig_rsi.update_layout(hovermode="x unified")
     st.plotly_chart(fig_rsi, use_container_width=True)
 
-    # Rolling stats
+    # Rolling stats (FIXED)
     st.subheader("Rolling Volatility & Mean (Returns)")
     window_rs = st.slider("Rolling window (days)", 5, 126, 21)
     roll_vol, roll_mean = compute_rolling_stats(price_series, window=window_rs)
@@ -857,10 +845,6 @@ with tab_arimax:
         )
 
         price_series = load_single_ticker(arimax_ticker)
-
-        # Ensure Series
-        if isinstance(price_series, pd.DataFrame):
-            price_series = price_series.squeeze()
 
         st.subheader("Select Macro Exogenous Variables")
         macro_list = list(macro_df.columns)
@@ -933,11 +917,6 @@ with tab_garchx:
             )
 
             price_series = load_single_ticker(garch_ticker)
-
-            # Ensure Series
-            if isinstance(price_series, pd.DataFrame):
-                price_series = price_series.squeeze()
-
             returns = price_series.pct_change().dropna()
 
             st.subheader("Select Macro Exogenous Variables")
