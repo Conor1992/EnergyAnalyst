@@ -4,6 +4,7 @@ import numpy as np
 import plotly.express as px
 import streamlit as st
 import requests
+import statsmodels.api as sm
 
 st.set_page_config(page_title="Energy & Macro Dashboard", layout="wide")
 
@@ -325,7 +326,70 @@ def compute_return_table(tickers, user_start_dt, date_range):
     return pd.DataFrame(rows).set_index("Name")
 
 # ---------------------------------------------------------
-# 6. TOP-LEVEL TABS
+# 6. REGRESSION HELPER (MACRO → FUTURE WTI RETURNS)
+# ---------------------------------------------------------
+
+def run_macro_regressions(macro_series, wti_series, horizons=(1, 5, 21)):
+    """
+    For each horizon h:
+      y = future WTI return over h days
+      X = current macro level
+    Returns a DataFrame with coef, p-value, R² per horizon.
+    """
+    results = []
+    aligned = pd.concat([macro_series, wti_series], axis=1).dropna()
+    aligned.columns = ["macro", "wti"]
+
+    for h in horizons:
+        future_ret = aligned["wti"].pct_change(h).shift(-h)
+        df_reg = pd.concat([aligned["macro"], future_ret], axis=1).dropna()
+        if df_reg.empty:
+            continue
+        X = sm.add_constant(df_reg["macro"])
+        y = df_reg[future_ret.name]
+        model = sm.OLS(y, X).fit()
+        coef = model.params["macro"]
+        pval = model.pvalues["macro"]
+        r2 = model.rsquared
+        results.append({
+            "Horizon (days)": h,
+            "Coefficient": coef,
+            "p-value": pval,
+            "R-squared": r2
+        })
+    if not results:
+        return pd.DataFrame(columns=["Horizon (days)", "Coefficient", "p-value", "R-squared"])
+    return pd.DataFrame(results)
+
+def interpret_regression_row(row, macro_name):
+    h = int(row["Horizon (days)"])
+    coef = row["Coefficient"]
+    p = row["p-value"]
+    r2 = row["R-squared"]
+
+    if np.isnan(coef) or np.isnan(p):
+        return f"{h}d: insufficient data."
+
+    if p < 0.05:
+        sig = "statistically significant"
+    else:
+        sig = "not statistically significant"
+
+    if coef > 0:
+        direction = "higher"
+        effect = "higher"
+    else:
+        direction = "higher"
+        effect = "lower"
+
+    return (
+        f"{h}-day horizon: The coefficient is {coef:.4f} (p={p:.3f}, R²={r2:.3f}). "
+        f"This suggests that {sig} {direction} values of {macro_name} "
+        f"are associated with {effect} future WTI returns over {h} days."
+    )
+
+# ---------------------------------------------------------
+# 7. TOP-LEVEL TABS
 # ---------------------------------------------------------
 
 tab_overview, tab_macro_data, tab_macro_analysis = st.tabs(
@@ -333,7 +397,7 @@ tab_overview, tab_macro_data, tab_macro_analysis = st.tabs(
 )
 
 # ---------------------------------------------------------
-# 7. OVERVIEW TAB
+# 8. OVERVIEW TAB
 # ---------------------------------------------------------
 
 with tab_overview:
@@ -423,7 +487,7 @@ with tab_overview:
         render_tab_group(equities, "Energy Equities")
 
 # ---------------------------------------------------------
-# 8. MACRO DATA TAB (FRED API + LOADER)
+# 9. MACRO DATA TAB (FRED API + LOADER)
 # ---------------------------------------------------------
 
 with tab_macro_data:
@@ -453,7 +517,7 @@ with tab_macro_data:
         st.dataframe(macro_df.tail())
 
 # ---------------------------------------------------------
-# 9. MACRO ANALYSIS TAB
+# 10. MACRO ANALYSIS TAB (WITH REGRESSIONS)
 # ---------------------------------------------------------
 
 with tab_macro_analysis:
@@ -478,6 +542,7 @@ with tab_macro_analysis:
         aligned = pd.concat([series, energy["WTI"]], axis=1).dropna()
         aligned.columns = [selected_macro, "WTI"]
 
+        # Time-Series Overlay
         st.subheader("Time-Series Relationship")
         fig_ts = px.line(
             aligned,
@@ -487,6 +552,7 @@ with tab_macro_analysis:
         fig_ts.update_layout(hovermode="x unified")
         st.plotly_chart(fig_ts, use_container_width=True)
 
+        # Rolling Correlation
         st.subheader("90‑Day Rolling Correlation")
         rolling_corr = (
             aligned[selected_macro]
@@ -503,6 +569,7 @@ with tab_macro_analysis:
         fig_corr.update_layout(hovermode="x unified")
         st.plotly_chart(fig_corr, use_container_width=True)
 
+        # Historical Context
         st.subheader("Historical Context")
 
         def historical_context(series_in):
@@ -529,10 +596,30 @@ with tab_macro_analysis:
         **Interpretation:** This series is **{pos}**.
         """)
 
+        # Macro Explanation
         st.subheader("Macro Explanation")
         if selected_macro in explanation_df.index:
             st.dataframe(explanation_df.loc[[selected_macro]])
         else:
             st.info("No explanation available for this macro series.")
 
+        # Regression Analysis
+        st.subheader("Regression: Macro vs Future WTI Returns")
+
+        reg_df = run_macro_regressions(series, energy["WTI"], horizons=(1, 5, 21))
+        if reg_df.empty:
+            st.info("Not enough data to run regressions for this macro series.")
+        else:
+            st.dataframe(
+                reg_df.style.format({
+                    "Coefficient": "{:.4f}",
+                    "p-value": "{:.3f}",
+                    "R-squared": "{:.3f}"
+                })
+            )
+
+            st.markdown("**Interpretation:**")
+            for _, row in reg_df.iterrows():
+                explanation = interpret_regression_row(row, selected_macro)
+                st.markdown(f"- {explanation}")
 
