@@ -7,6 +7,13 @@ import requests
 import statsmodels.api as sm
 from statsmodels.tsa.arima.model import ARIMA
 
+# Try to import arch for GARCH
+try:
+    from arch import arch_model
+    ARCH_AVAILABLE = True
+except ImportError:
+    ARCH_AVAILABLE = False
+
 st.set_page_config(page_title="Energy & Macro Dashboard", layout="wide")
 
 # ---------------------------------------------------------
@@ -387,8 +394,12 @@ def interpret_regression_row(row, macro_name):
         f"**{effect} future WTI returns**."
     )
 
-def run_multifactor_regression(macro_df, wti_series, horizon=5):
-    aligned = macro_df.join(wti_series.rename("WTI"), how="inner").dropna()
+def run_multifactor_regression(macro_df, wti_series, selected_macros, horizon=5):
+    if not selected_macros:
+        return None
+
+    macro_sub = macro_df[selected_macros].dropna(how="all")
+    aligned = macro_sub.join(wti_series.rename("WTI"), how="inner").dropna()
     if aligned.empty:
         return None
 
@@ -398,7 +409,10 @@ def run_multifactor_regression(macro_df, wti_series, horizon=5):
     if df_reg.empty:
         return None
 
-    X = sm.add_constant(df_reg.drop(columns=["future_ret"]))
+    # Standardize predictors
+    X_raw = df_reg.drop(columns=["future_ret"])
+    X = (X_raw - X_raw.mean()) / X_raw.std()
+    X = sm.add_constant(X)
     y = df_reg["future_ret"]
     model = sm.OLS(y, X).fit()
     return model
@@ -445,27 +459,62 @@ def compute_macd(series, fast=12, slow=26, signal=9):
     hist = macd - signal_line
     return macd, signal_line, hist
 
-def fit_arima(series, order=(1,1,1), steps=10):
-    s = series.dropna()
+def fit_arimax(price_series, exog_df, order=(1,1,1), steps=10):
+    s = price_series.dropna()
+    if s.empty:
+        return None, None
+    # Align exogenous with price
+    exog = exog_df.reindex(s.index).fillna(method="ffill").dropna()
+    s = s.loc[exog.index]
     if len(s) < 50:
         return None, None
-    model = ARIMA(s, order=order)
+    model = ARIMA(s, order=order, exog=exog)
     res = model.fit()
-    forecast = res.get_forecast(steps=steps)
-    fc = forecast.predicted_mean
-    conf = forecast.conf_int()
-    return fc, conf
+    # Forecast exog: hold last value constant
+    last_exog = exog.iloc[-1:]
+    exog_fc = pd.concat([last_exog] * steps)
+    fc = res.get_forecast(steps=steps, exog=exog_fc)
+    fc_mean = fc.predicted_mean
+    conf = fc.conf_int()
+    return fc_mean, conf
 
-def fit_garch_placeholder(series):
-    # Placeholder: user can later plug in arch library
-    return None
+def fit_garch_x(return_series, exog_df, p=1, o=0, q=1, dist="normal", steps=10):
+    if not ARCH_AVAILABLE:
+        return None, None
+    r = return_series.dropna()
+    if r.empty:
+        return None, None
+    exog = exog_df.reindex(r.index).fillna(method="ffill").dropna()
+    r = r.loc[exog.index]
+    if len(r) < 200:
+        return None, None
+    am = arch_model(
+        r * 100,  # scale to percent
+        mean="Constant",
+        vol="GARCH",
+        p=p,
+        o=o,
+        q=q,
+        dist=dist,
+        x=exog
+    )
+    res = am.fit(disp="off")
+    fc = res.forecast(horizon=steps, x=exog.iloc[[-1]].values)
+    vol_fc = np.sqrt(fc.variance.values[-1, :])
+    return vol_fc, res
+
+def compute_rolling_stats(series, window=21):
+    returns = series.pct_change()
+    roll_vol = returns.rolling(window).std()
+    roll_mean = returns.rolling(window).mean()
+    return roll_vol, roll_mean
 
 # ---------------------------------------------------------
-# 8. TOP-LEVEL TABS
+# 8. TOP-LEVEL TABS (M3)
 # ---------------------------------------------------------
 
-tab_overview, tab_macro_data, tab_macro_analysis, tab_modeling, tab_regressions = st.tabs(
-    ["Overview", "Macro Data", "Macro Analysis", "Modeling", "Regressions"]
+tab_overview, tab_macro_data, tab_macro_analysis, tab_technicals, tab_arimax, tab_garchx, tab_regressions = st.tabs(
+    ["Overview", "Macro Data", "Macro Analysis", "Technicals", "ARIMAX", "GARCH‑X", "Regressions"]
 )
 
 # ---------------------------------------------------------
@@ -719,14 +768,14 @@ with tab_macro_analysis:
                 st.markdown(f"- {explanation}")
 
 # ---------------------------------------------------------
-# 12. MODELING TAB (MACD, RSI, ARIMA, GARCH placeholder)
+# 12. TECHNICALS TAB (MACD, RSI, ROLLING STATS)
 # ---------------------------------------------------------
 
-with tab_modeling:
-    st.title("Technical & Time-Series Modeling")
+with tab_technicals:
+    st.title("Technical Indicators & Rolling Stats")
 
     modeling_ticker = st.selectbox(
-        "Select ticker for modeling:",
+        "Select ticker for technicals:",
         ["CL=F"] + equities + etfs
     )
 
@@ -744,6 +793,9 @@ with tab_modeling:
     # MACD
     st.subheader("MACD")
     macd, signal_line, hist = compute_macd(price_series)
+    macd = pd.Series(macd, index=price_series.index)
+    signal_line = pd.Series(signal_line, index=price_series.index)
+    hist = pd.Series(hist, index=price_series.index)
     macd_df = pd.DataFrame({
         "MACD": macd,
         "Signal": signal_line,
@@ -762,38 +814,158 @@ with tab_modeling:
     fig_rsi.update_layout(hovermode="x unified")
     st.plotly_chart(fig_rsi, use_container_width=True)
 
-    # ARIMA
-    st.subheader("ARIMA Forecast (Price)")
-    steps = st.slider("Forecast horizon (days)", 5, 60, 20)
-    fc, conf = fit_arima(price_series, order=(1,1,1), steps=steps)
-    if fc is None:
-        st.info("Not enough data to fit ARIMA model.")
-    else:
-        fc_index = pd.date_range(start=price_series.index[-1] + pd.Timedelta(days=1), periods=steps, freq="B")
-        fc_series = pd.Series(fc.values, index=fc_index, name="Forecast")
-        conf_df = conf.copy()
-        conf_df.index = fc_index
-
-        hist_df = price_series.rename("Price")
-        fig_arima = px.line(hist_df, title="ARIMA Forecast")
-        fig_arima.add_scatter(x=fc_series.index, y=fc_series.values, mode="lines", name="Forecast")
-        fig_arima.add_scatter(
-            x=conf_df.index, y=conf_df.iloc[:,0], mode="lines",
-            line=dict(dash="dash", color="gray"), name="Lower CI"
-        )
-        fig_arima.add_scatter(
-            x=conf_df.index, y=conf_df.iloc[:,1], mode="lines",
-            line=dict(dash="dash", color="gray"), name="Upper CI"
-        )
-        fig_arima.update_layout(hovermode="x unified")
-        st.plotly_chart(fig_arima, use_container_width=True)
-
-    # GARCH placeholder
-    st.subheader("GARCH Volatility Modeling (Placeholder)")
-    st.info("GARCH modeling can be added using the 'arch' library. This placeholder keeps the structure ready.")
+    # Rolling stats
+    st.subheader("Rolling Volatility & Mean (Returns)")
+    window_rs = st.slider("Rolling window (days)", 5, 126, 21)
+    roll_vol, roll_mean = compute_rolling_stats(price_series, window=window_rs)
+    roll_df = pd.DataFrame({
+        "Rolling Volatility": roll_vol,
+        "Rolling Mean": roll_mean
+    }).dropna()
+    fig_roll = px.line(roll_df, title=f"Rolling {window_rs}-Day Volatility & Mean")
+    fig_roll.update_layout(hovermode="x unified")
+    st.plotly_chart(fig_roll, use_container_width=True)
 
 # ---------------------------------------------------------
-# 13. REGRESSIONS TAB (MULTI-FACTOR & ROLLING)
+# 13. ARIMAX TAB (USER-SELECTED MACROS)
+# ---------------------------------------------------------
+
+with tab_arimax:
+    st.title("ARIMAX Modeling (Price with Macro Exogenous)")
+
+    macro_df = st.session_state.get("macro_df", pd.DataFrame())
+    if macro_df.empty:
+        st.warning("No macro data available. Go to the 'Macro Data' tab, enter your FRED API key, and load data.")
+    else:
+        arimax_ticker = st.selectbox(
+            "Select ticker for ARIMAX:",
+            ["CL=F"] + equities + etfs,
+            key="arimax_ticker"
+        )
+
+        price_series = load_single_ticker(arimax_ticker)
+
+        st.subheader("Select Macro Exogenous Variables")
+        macro_list = list(macro_df.columns)
+        selected_macros_arimax = st.multiselect(
+            "Macro variables to include as exogenous:",
+            macro_list,
+            default=macro_list[:3]
+        )
+
+        if not selected_macros_arimax:
+            st.info("Select at least one macro variable to run ARIMAX.")
+        else:
+            exog_df = macro_df[selected_macros_arimax]
+
+            st.subheader("ARIMA Parameters (p, d, q)")
+            col_p, col_d, col_q = st.columns(3)
+            with col_p:
+                p = st.number_input("p (AR order)", min_value=0, max_value=5, value=1, step=1)
+            with col_d:
+                d = st.number_input("d (diff order)", min_value=0, max_value=2, value=1, step=1)
+            with col_q:
+                q = st.number_input("q (MA order)", min_value=0, max_value=5, value=1, step=1)
+
+            steps = st.slider("Forecast horizon (days)", 5, 60, 20)
+
+            if st.button("Run ARIMAX"):
+                with st.spinner("Fitting ARIMAX model..."):
+                    fc_mean, conf = fit_arimax(price_series, exog_df, order=(p, d, q), steps=steps)
+
+                if fc_mean is None:
+                    st.info("Not enough data or alignment issues to fit ARIMAX.")
+                else:
+                    fc_index = pd.date_range(start=price_series.index[-1] + pd.Timedelta(days=1), periods=steps, freq="B")
+                    fc_series = pd.Series(fc_mean.values, index=fc_index, name="Forecast")
+                    conf_df = conf.copy()
+                    conf_df.index = fc_index
+
+                    hist_df = price_series.rename("Price")
+                    fig_arima = px.line(hist_df, title="ARIMAX Forecast")
+                    fig_arima.add_scatter(x=fc_series.index, y=fc_series.values, mode="lines", name="Forecast")
+                    fig_arima.add_scatter(
+                        x=conf_df.index, y=conf_df.iloc[:,0], mode="lines",
+                        line=dict(dash="dash", color="gray"), name="Lower CI"
+                    )
+                    fig_arima.add_scatter(
+                        x=conf_df.index, y=conf_df.iloc[:,1], mode="lines",
+                        line=dict(dash="dash", color="gray"), name="Upper CI"
+                    )
+                    fig_arima.update_layout(hovermode="x unified")
+                    st.plotly_chart(fig_arima, use_container_width=True)
+
+# ---------------------------------------------------------
+# 14. GARCH-X TAB (USER-SELECTED MACROS, p-o-q)
+# ---------------------------------------------------------
+
+with tab_garchx:
+    st.title("GARCH‑X Volatility Modeling (Returns with Macro Exogenous)")
+
+    if not ARCH_AVAILABLE:
+        st.warning("The 'arch' library is not installed. Install it with 'pip install arch' to use GARCH‑X.")
+    else:
+        macro_df = st.session_state.get("macro_df", pd.DataFrame())
+        if macro_df.empty:
+            st.warning("No macro data available. Go to the 'Macro Data' tab, enter your FRED API key, and load data.")
+        else:
+            garch_ticker = st.selectbox(
+                "Select ticker for GARCH‑X:",
+                ["CL=F"] + equities + etfs,
+                key="garch_ticker"
+            )
+
+            price_series = load_single_ticker(garch_ticker)
+            returns = price_series.pct_change().dropna()
+
+            st.subheader("Select Macro Exogenous Variables")
+            macro_list = list(macro_df.columns)
+            selected_macros_garch = st.multiselect(
+                "Macro variables to include as exogenous:",
+                macro_list,
+                default=macro_list[:3]
+            )
+
+            if not selected_macros_garch:
+                st.info("Select at least one macro variable to run GARCH‑X.")
+            else:
+                exog_df = macro_df[selected_macros_garch]
+
+                st.subheader("GARCH Parameters (p, o, q)")
+                col_p, col_o, col_q = st.columns(3)
+                with col_p:
+                    p_g = st.number_input("p (ARCH order)", min_value=0, max_value=5, value=1, step=1)
+                with col_o:
+                    o_g = st.number_input("o (asymmetry)", min_value=0, max_value=5, value=0, step=1)
+                with col_q:
+                    q_g = st.number_input("q (GARCH order)", min_value=0, max_value=5, value=1, step=1)
+
+                dist = st.selectbox("Distribution", ["normal", "t", "skewt"], index=0)
+                steps_g = st.slider("Volatility forecast horizon (days)", 5, 60, 20)
+
+                if st.button("Run GARCH‑X"):
+                    with st.spinner("Fitting GARCH‑X model..."):
+                        vol_fc, res_garch = fit_garch_x(returns, exog_df, p=p_g, o=o_g, q=q_g, dist=dist, steps=steps_g)
+
+                    if vol_fc is None:
+                        st.info("Not enough data or alignment issues to fit GARCH‑X.")
+                    else:
+                        fc_index = pd.date_range(start=returns.index[-1] + pd.Timedelta(days=1), periods=steps_g, freq="B")
+                        vol_series = pd.Series(vol_fc, index=fc_index, name="Forecast Volatility")
+
+                        st.subheader("Forecast Volatility (Annualized Approx.)")
+                        fig_vol = px.line(vol_series * np.sqrt(252), title="GARCH‑X Volatility Forecast (Annualized)")
+                        fig_vol.update_layout(hovermode="x unified")
+                        st.plotly_chart(fig_vol, use_container_width=True)
+
+                        st.subheader("Last In-Sample Conditional Volatility")
+                        cond_vol = res_garch.conditional_volatility
+                        fig_cv = px.line(cond_vol, title="In-Sample Conditional Volatility")
+                        fig_cv.update_layout(hovermode="x unified")
+                        st.plotly_chart(fig_cv, use_container_width=True)
+
+# ---------------------------------------------------------
+# 15. REGRESSIONS TAB (MULTI-FACTOR & ROLLING)
 # ---------------------------------------------------------
 
 with tab_regressions:
@@ -811,19 +983,27 @@ with tab_regressions:
         )["Close"]
         wti = energy["CL=F"].rename("WTI").dropna()
 
-        st.subheader("Multi-Factor Regression (Macro Basket → Future WTI Returns)")
+        st.subheader("Multi-Factor Regression (User-Selected Macro Basket → Future WTI Returns)")
+        macro_list = list(macro_df.columns)
+        selected_macros_mf = st.multiselect(
+            "Select macro variables for multi-factor regression:",
+            macro_list,
+            default=macro_list[:4]
+        )
         horizon = st.selectbox("Horizon (days)", [5, 21, 63], index=1)
-        model = run_multifactor_regression(macro_df, wti, horizon=horizon)
-        if model is None:
-            st.info("Not enough data to run multi-factor regression.")
+        if selected_macros_mf:
+            model = run_multifactor_regression(macro_df, wti, selected_macros_mf, horizon=horizon)
+            if model is None:
+                st.info("Not enough data to run multi-factor regression.")
+            else:
+                st.markdown(f"**R-squared:** {model.rsquared:.3f}")
+                coef_df = model.params.to_frame("Coefficient")
+                coef_df["p-value"] = model.pvalues
+                st.dataframe(coef_df.style.format({"Coefficient": "{:.4f}", "p-value": "{:.3f}"}))
         else:
-            st.markdown(f"**R-squared:** {model.rsquared:.3f}")
-            coef_df = model.params.to_frame("Coefficient")
-            coef_df["p-value"] = model.pvalues
-            st.dataframe(coef_df.style.format({"Coefficient": "{:.4f}", "p-value": "{:.3f}"}))
+            st.info("Select at least one macro variable for multi-factor regression.")
 
         st.subheader("Rolling Regression (Single Macro → WTI Returns)")
-        macro_list = list(macro_df.columns)
         selected_macro_roll = st.selectbox("Select macro variable for rolling regression:", macro_list)
         window = st.slider("Rolling window (days)", 60, 504, 252)
         horizon_roll = st.selectbox("Horizon (days) for rolling regression", [5, 21], index=0)
