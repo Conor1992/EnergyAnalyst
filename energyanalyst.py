@@ -338,11 +338,6 @@ def compute_return_table(tickers, user_start_dt, date_range):
 # ---------------------------------------------------------
 
 def run_macro_regressions(macro_series, wti_series, horizons=(1, 5, 21)):
-    """
-    Predict future WTI log returns using macro levels.
-    X = standardized macro level
-    Y = future log return over horizon h
-    """
     results = []
 
     aligned = pd.concat([macro_series, wti_series], axis=1).dropna()
@@ -441,28 +436,15 @@ def run_rolling_regression(macro_series, wti_series, window=252, horizon=5):
 # ---------------------------------------------------------
 
 def compute_rsi(series, window=14):
-    # Price differences
     delta = series.diff()
-
-    # Force to 1‑D numpy array
     delta_np = np.asarray(delta).reshape(-1)
-
-    # Gains and losses
     gain = np.where(delta_np > 0, delta_np, 0)
     loss = np.where(delta_np < 0, -delta_np, 0)
-
-    # Back to Series with correct index
     gain_s = pd.Series(gain, index=series.index)
     loss_s = pd.Series(loss, index=series.index)
-
-    # Rolling averages
     roll_up = gain_s.rolling(window).mean()
     roll_down = loss_s.rolling(window).mean()
-
-    # Avoid division by zero
     rs = roll_up / roll_down.replace(0, np.nan)
-
-    # RSI
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
@@ -828,14 +810,19 @@ with tab_technicals:
     fig_rsi.update_layout(hovermode="x unified")
     st.plotly_chart(fig_rsi, use_container_width=True)
 
-    # Rolling stats
+    # Rolling stats (FIXED)
     st.subheader("Rolling Volatility & Mean (Returns)")
     window_rs = st.slider("Rolling window (days)", 5, 126, 21)
     roll_vol, roll_mean = compute_rolling_stats(price_series, window=window_rs)
+
+    roll_vol = pd.Series(np.asarray(roll_vol).reshape(-1), index=price_series.index)
+    roll_mean = pd.Series(np.asarray(roll_mean).reshape(-1), index=price_series.index)
+
     roll_df = pd.DataFrame({
         "Rolling Volatility": roll_vol,
         "Rolling Mean": roll_mean
     }).dropna()
+
     fig_roll = px.line(roll_df, title=f"Rolling {window_rs}-Day Volatility & Mean")
     fig_roll.update_layout(hovermode="x unified")
     st.plotly_chart(fig_roll, use_container_width=True)
