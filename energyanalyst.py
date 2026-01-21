@@ -158,8 +158,6 @@ def normalize_to_date(series, base_date, base_value=100):
 def plot_price_group(tickers, title):
     df = pd.DataFrame({ticker_names.get(t, t): extract_close_series(t) for t in tickers})
     df = df.dropna(how="all")
-    if df.empty:
-        return px.line(title=title)
     fig = px.line(df, title=title)
     fig.update_layout(hovermode="x unified")
     return fig
@@ -170,8 +168,6 @@ def plot_normalized_group(tickers, title, method="first", base_value=100):
         s = extract_close_series(t)
         if not s.empty:
             df_dict[ticker_names.get(t, t)] = normalize(s, method=method, base_value=base_value)
-    if not df_dict:
-        return px.line(title=f"{title} (Normalized: {method})")
     df = pd.DataFrame(df_dict).dropna(how="all")
     fig = px.line(df, title=f"{title} (Normalized: {method})")
     fig.update_layout(hovermode="x unified")
@@ -183,16 +179,12 @@ def plot_indexed_to_100(tickers, title, base_date):
         s = extract_close_series(t)
         if not s.empty:
             df_dict[ticker_names.get(t, t)] = normalize_to_date(s, base_date)
-    if not df_dict:
-        return px.line(title=f"{title} (Indexed to 100)")
     df = pd.DataFrame(df_dict).dropna(how="all")
     fig = px.line(df, title=f"{title} (Indexed to 100 at {base_date.date()})")
     fig.update_layout(hovermode="x unified")
     return fig
 
 def plot_custom_index(index_series, base_date):
-    if index_series.empty or base_date is None:
-        return px.line(title="Custom ETF Index")
     fig = px.line(index_series, title=f"Custom ETF Index (Base Date: {base_date.date()})")
     fig.update_layout(hovermode="x unified")
     return fig
@@ -200,9 +192,12 @@ def plot_custom_index(index_series, base_date):
 def plot_category_heatmap(tickers, title):
     df = pd.DataFrame({ticker_names.get(t, t): extract_close_series(t) for t in tickers})
     df = df.dropna(axis=1, how="all")
+
     if df.empty:
         return px.imshow([[0]], text_auto=True, title=f"{title} — Correlation Heatmap")
-    corr = df.pct_change().corr()
+
+    corr = df.pct_change().corr().round(2)  # <-- ROUND TO TWO DECIMALS
+
     fig = px.imshow(
         corr,
         text_auto=True,
@@ -218,11 +213,9 @@ def plot_category_heatmap(tickers, title):
 
 def create_custom_index(tickers, base_value=100):
     df = pd.DataFrame({t: extract_close_series(t) for t in tickers})
-    # Drop columns with all NaN
     df = df.dropna(axis=1, how="all")
     if df.empty:
         return pd.Series(dtype=float), None
-    # Drop rows with any NaN
     df = df.dropna()
     if df.empty:
         return pd.Series(dtype=float), None
