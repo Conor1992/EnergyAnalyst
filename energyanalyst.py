@@ -339,3 +339,115 @@ with tab_etfs:
 
 with tab_equities:
     render_tab(equities, "Energy Equities")
+
+#######HERE IS THE START OF MACRO ANALYSIS##########
+
+# ---------------------------------------------------------
+# MACRO ANALYSIS TAB
+# ---------------------------------------------------------
+
+tab_macro = st.tabs(["Macro Analysis"])[0]
+
+with tab_macro:
+
+    st.header("Macro–Energy Relationship Analysis")
+
+    # ----------------------------
+    # Load WTI & Brent
+    # ----------------------------
+    energy = yf.download(
+        ["CL=F", "BZ=F"],
+        start="1990-01-01",
+        auto_adjust=True,
+        progress=False
+    )["Close"]
+    energy.columns = ["WTI", "Brent"]
+
+    # ----------------------------
+    # Macro variable selector
+    # ----------------------------
+    macro_list = list(macro_df.columns)
+    selected_macro = st.selectbox("Select a macro variable:", macro_list)
+
+    series = macro_df[selected_macro].dropna()
+
+    # ----------------------------
+    # Align macro + WTI
+    # ----------------------------
+    aligned = pd.concat([series, energy["WTI"]], axis=1).dropna()
+    aligned.columns = [selected_macro, "WTI"]
+
+    # ----------------------------
+    # Interactive Time-Series Overlay
+    # ----------------------------
+    st.subheader("Time-Series Relationship")
+
+    fig_ts = px.line(
+        aligned,
+        labels={"value": "Value", "index": "Date"},
+        title=f"{selected_macro} vs WTI Crude"
+    )
+    fig_ts.update_layout(hovermode="x unified")
+    st.plotly_chart(fig_ts, use_container_width=True)
+
+    # ----------------------------
+    # Rolling Correlation
+    # ----------------------------
+    st.subheader("90‑Day Rolling Correlation")
+
+    rolling_corr = (
+        aligned[selected_macro]
+        .pct_change()
+        .rolling(90)
+        .corr(aligned["WTI"].pct_change())
+    )
+
+    fig_corr = px.line(
+        rolling_corr,
+        title=f"{selected_macro} vs WTI — 90‑Day Rolling Correlation",
+        labels={"value": "Correlation", "index": "Date"}
+    )
+    fig_corr.add_hline(y=0, line_width=1, line_color="black")
+    fig_corr.update_layout(hovermode="x unified")
+    st.plotly_chart(fig_corr, use_container_width=True)
+
+    # ----------------------------
+    # Historical Context
+    # ----------------------------
+    st.subheader("Historical Context")
+
+    def historical_context(series):
+        s = series.dropna()
+        latest = s.iloc[-1]
+        pct = s.rank(pct=True).iloc[-1] * 100
+
+        if pct >= 90:
+            pos = "near the highest levels in its history"
+        elif pct >= 70:
+            pos = "well above its long‑term average"
+        elif pct >= 40:
+            pos = "around its long‑term average"
+        elif pct >= 10:
+            pos = "well below its long‑term average"
+        else:
+            pos = "near the lowest levels in its history"
+
+        return latest, pct, pos
+
+    latest, pct, pos = historical_context(series)
+
+    st.markdown(f"""
+    **Latest Value:** {latest:.3f}  
+    **Historical Percentile:** {pct:.1f}%  
+    **Interpretation:** This series is **{pos}**.
+    """)
+
+    # ----------------------------
+    # Macro Explanation Table
+    # ----------------------------
+    st.subheader("Macro Explanation")
+
+    if selected_macro in explanation_df.index:
+        st.dataframe(explanation_df.loc[[selected_macro]])
+    else:
+        st.info("No explanation available for this macro series.")
