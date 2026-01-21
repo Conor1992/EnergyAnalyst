@@ -86,32 +86,37 @@ def load_data():
 data = load_data()
 
 # ---------------------------------------------------------
-# 4. User-Defined Start Date
+# 4. User-Defined Start Date (converted to datetime)
 # ---------------------------------------------------------
 
 min_date = data.index.min()
 max_date = data.index.max()
 
+min_dt = pd.to_datetime(min_date).to_pydatetime()
+max_dt = pd.to_datetime(max_date).to_pydatetime()
+
 user_start_date = st.sidebar.date_input(
     "Select start date",
-    value=min_date,
-    min_value=min_date,
-    max_value=max_date
+    value=min_dt.date(),
+    min_value=min_dt.date(),
+    max_value=max_dt.date()
 )
 
+user_start_dt = pd.to_datetime(user_start_date).to_pydatetime()
+
 # ---------------------------------------------------------
-# 5. Date Range Slider (respects start date)
+# 5. Date Range Slider (datetime only)
 # ---------------------------------------------------------
 
 date_range = st.sidebar.slider(
     "Select date range",
-    min_value=user_start_date,
-    max_value=max_date.to_pydatetime(),
-    value=(user_start_date, max_date.to_pydatetime())
+    min_value=user_start_dt,
+    max_value=max_dt,
+    value=(user_start_dt, max_dt)
 )
 
 def filter_by_date(series):
-    s = series.loc[user_start_date:]
+    s = series.loc[user_start_dt:]
     return s.loc[date_range[0]:date_range[1]]
 
 # ---------------------------------------------------------
@@ -234,9 +239,9 @@ norm_choice = st.sidebar.selectbox(
 
 index_start_date = st.sidebar.slider(
     "Index to 100 starting at:",
-    min_value=user_start_date,
-    max_value=max_date.to_pydatetime(),
-    value=user_start_date
+    min_value=user_start_dt,
+    max_value=max_dt,
+    value=user_start_dt
 )
 
 show_heatmap = st.sidebar.checkbox("Show correlation heatmap", True)
