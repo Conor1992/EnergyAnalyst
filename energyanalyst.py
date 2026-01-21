@@ -5,6 +5,7 @@ import plotly.express as px
 import streamlit as st
 import requests
 import statsmodels.api as sm
+from statsmodels.tsa.arima.model import ARIMA
 
 st.set_page_config(page_title="Energy & Macro Dashboard", layout="wide")
 
@@ -326,39 +327,42 @@ def compute_return_table(tickers, user_start_dt, date_range):
     return pd.DataFrame(rows).set_index("Name")
 
 # ---------------------------------------------------------
-# 6. REGRESSION HELPER (MACRO → FUTURE WTI RETURNS)
+# 6. REGRESSION HELPERS
 # ---------------------------------------------------------
 
 def run_macro_regressions(macro_series, wti_series, horizons=(1, 5, 21)):
     """
-    For each horizon h:
-      y = future WTI return over h days
-      X = current macro level
-    Returns a DataFrame with coef, p-value, R² per horizon.
+    Predict future WTI log returns using macro levels.
+    X = standardized macro level
+    Y = future log return over horizon h
     """
     results = []
+
     aligned = pd.concat([macro_series, wti_series], axis=1).dropna()
     aligned.columns = ["macro", "wti"]
 
+    aligned["macro_z"] = (aligned["macro"] - aligned["macro"].mean()) / aligned["macro"].std()
+    wti_log = np.log(aligned["wti"])
+
     for h in horizons:
-        future_ret = aligned["wti"].pct_change(h).shift(-h)
-        df_reg = pd.concat([aligned["macro"], future_ret], axis=1).dropna()
+        future_ret = (wti_log.shift(-h) - wti_log).rename("future_ret")
+        df_reg = pd.concat([aligned["macro_z"], future_ret], axis=1).dropna()
+
         if df_reg.empty:
             continue
-        X = sm.add_constant(df_reg["macro"])
-        y = df_reg[future_ret.name]
+
+        X = sm.add_constant(df_reg["macro_z"])
+        y = df_reg["future_ret"]
+
         model = sm.OLS(y, X).fit()
-        coef = model.params["macro"]
-        pval = model.pvalues["macro"]
-        r2 = model.rsquared
+
         results.append({
             "Horizon (days)": h,
-            "Coefficient": coef,
-            "p-value": pval,
-            "R-squared": r2
+            "Coefficient": model.params["macro_z"],
+            "p-value": model.pvalues["macro_z"],
+            "R-squared": model.rsquared
         })
-    if not results:
-        return pd.DataFrame(columns=["Horizon (days)", "Coefficient", "p-value", "R-squared"])
+
     return pd.DataFrame(results)
 
 def interpret_regression_row(row, macro_name):
@@ -367,37 +371,105 @@ def interpret_regression_row(row, macro_name):
     p = row["p-value"]
     r2 = row["R-squared"]
 
-    if np.isnan(coef) or np.isnan(p):
-        return f"{h}d: insufficient data."
-
     if p < 0.05:
         sig = "statistically significant"
     else:
         sig = "not statistically significant"
 
     if coef > 0:
-        direction = "higher"
         effect = "higher"
     else:
-        direction = "higher"
         effect = "lower"
 
     return (
-        f"{h}-day horizon: The coefficient is {coef:.4f} (p={p:.3f}, R²={r2:.3f}). "
-        f"This suggests that {sig} {direction} values of {macro_name} "
-        f"are associated with {effect} future WTI returns over {h} days."
+        f"Over a {h}-day horizon: coefficient = {coef:.4f}, p={p:.3f}, R²={r2:.3f}. "
+        f"This suggests {sig} increases in **{macro_name}** tend to be associated with "
+        f"**{effect} future WTI returns**."
     )
 
+def run_multifactor_regression(macro_df, wti_series, horizon=5):
+    aligned = macro_df.join(wti_series.rename("WTI"), how="inner").dropna()
+    if aligned.empty:
+        return None
+
+    wti_log = np.log(aligned["WTI"])
+    future_ret = (wti_log.shift(-horizon) - wti_log).rename("future_ret")
+    df_reg = pd.concat([aligned.drop(columns=["WTI"]), future_ret], axis=1).dropna()
+    if df_reg.empty:
+        return None
+
+    X = sm.add_constant(df_reg.drop(columns=["future_ret"]))
+    y = df_reg["future_ret"]
+    model = sm.OLS(y, X).fit()
+    return model
+
+def run_rolling_regression(macro_series, wti_series, window=252, horizon=5):
+    aligned = pd.concat([macro_series, wti_series], axis=1).dropna()
+    aligned.columns = ["macro", "wti"]
+    wti_log = np.log(aligned["wti"])
+    future_ret = (wti_log.shift(-horizon) - wti_log).rename("future_ret")
+    df = pd.concat([aligned["macro"], future_ret], axis=1).dropna()
+    if df.empty:
+        return pd.Series(dtype=float)
+
+    betas = []
+    index = []
+    for i in range(window, len(df)):
+        window_df = df.iloc[i-window:i]
+        X = sm.add_constant(window_df["macro"])
+        y = window_df["future_ret"]
+        model = sm.OLS(y, X).fit()
+        betas.append(model.params["macro"])
+        index.append(df.index[i])
+    return pd.Series(betas, index=index, name="Rolling Beta")
+
 # ---------------------------------------------------------
-# 7. TOP-LEVEL TABS
+# 7. TECHNICAL INDICATORS & MODELING HELPERS
 # ---------------------------------------------------------
 
-tab_overview, tab_macro_data, tab_macro_analysis = st.tabs(
-    ["Overview", "Macro Data", "Macro Analysis"]
+def compute_rsi(series, window=14):
+    delta = series.diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    roll_up = pd.Series(gain, index=series.index).rolling(window).mean()
+    roll_down = pd.Series(loss, index=series.index).rolling(window).mean()
+    rs = roll_up / roll_down
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def compute_macd(series, fast=12, slow=26, signal=9):
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd = ema_fast - ema_slow
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    hist = macd - signal_line
+    return macd, signal_line, hist
+
+def fit_arima(series, order=(1,1,1), steps=10):
+    s = series.dropna()
+    if len(s) < 50:
+        return None, None
+    model = ARIMA(s, order=order)
+    res = model.fit()
+    forecast = res.get_forecast(steps=steps)
+    fc = forecast.predicted_mean
+    conf = forecast.conf_int()
+    return fc, conf
+
+def fit_garch_placeholder(series):
+    # Placeholder: user can later plug in arch library
+    return None
+
+# ---------------------------------------------------------
+# 8. TOP-LEVEL TABS
+# ---------------------------------------------------------
+
+tab_overview, tab_macro_data, tab_macro_analysis, tab_modeling, tab_regressions = st.tabs(
+    ["Overview", "Macro Data", "Macro Analysis", "Modeling", "Regressions"]
 )
 
 # ---------------------------------------------------------
-# 8. OVERVIEW TAB
+# 9. OVERVIEW TAB
 # ---------------------------------------------------------
 
 with tab_overview:
@@ -487,7 +559,7 @@ with tab_overview:
         render_tab_group(equities, "Energy Equities")
 
 # ---------------------------------------------------------
-# 9. MACRO DATA TAB (FRED API + LOADER)
+# 10. MACRO DATA TAB (FRED API + LOADER + CHARTS)
 # ---------------------------------------------------------
 
 with tab_macro_data:
@@ -512,12 +584,42 @@ with tab_macro_data:
     if macro_df.empty:
         st.info("No macro data loaded yet. Enter your FRED API key and click 'Load Macro Data'.")
     else:
-        st.success("Macro data loaded.")
-        st.write("Preview of macro data:")
+        st.success("Macro data loaded successfully.")
+
+        st.subheader("Preview of Macro Data")
         st.dataframe(macro_df.tail())
 
+        st.subheader("Macro Series Preview (First 5)")
+        preview_cols = macro_df.columns[:5]
+        fig_preview = px.line(
+            macro_df[preview_cols],
+            title="Macro Series Preview",
+            labels={"value": "Value", "index": "Date"}
+        )
+        fig_preview.update_layout(hovermode="x unified")
+        st.plotly_chart(fig_preview, use_container_width=True)
+
+        st.subheader("Macro Correlation Heatmap")
+        corr = macro_df.pct_change().corr().round(2)
+        fig_corr = px.imshow(
+            corr,
+            text_auto=True,
+            color_continuous_scale="RdBu_r",
+            title="Macro Correlation Heatmap"
+        )
+        st.plotly_chart(fig_corr, use_container_width=True)
+
+        st.subheader("Macro Data Availability")
+        counts = macro_df.notna().sum().sort_values(ascending=False)
+        fig_counts = px.bar(
+            counts,
+            title="Number of Observations per Macro Series",
+            labels={"value": "Observations", "index": "Series"}
+        )
+        st.plotly_chart(fig_counts, use_container_width=True)
+
 # ---------------------------------------------------------
-# 10. MACRO ANALYSIS TAB (WITH REGRESSIONS)
+# 11. MACRO ANALYSIS TAB (SINGLE-FACTOR REGRESSIONS)
 # ---------------------------------------------------------
 
 with tab_macro_analysis:
@@ -542,7 +644,6 @@ with tab_macro_analysis:
         aligned = pd.concat([series, energy["WTI"]], axis=1).dropna()
         aligned.columns = [selected_macro, "WTI"]
 
-        # Time-Series Overlay
         st.subheader("Time-Series Relationship")
         fig_ts = px.line(
             aligned,
@@ -552,7 +653,6 @@ with tab_macro_analysis:
         fig_ts.update_layout(hovermode="x unified")
         st.plotly_chart(fig_ts, use_container_width=True)
 
-        # Rolling Correlation
         st.subheader("90‑Day Rolling Correlation")
         rolling_corr = (
             aligned[selected_macro]
@@ -569,7 +669,6 @@ with tab_macro_analysis:
         fig_corr.update_layout(hovermode="x unified")
         st.plotly_chart(fig_corr, use_container_width=True)
 
-        # Historical Context
         st.subheader("Historical Context")
 
         def historical_context(series_in):
@@ -596,16 +695,13 @@ with tab_macro_analysis:
         **Interpretation:** This series is **{pos}**.
         """)
 
-        # Macro Explanation
         st.subheader("Macro Explanation")
         if selected_macro in explanation_df.index:
             st.dataframe(explanation_df.loc[[selected_macro]])
         else:
             st.info("No explanation available for this macro series.")
 
-        # Regression Analysis
         st.subheader("Regression: Macro vs Future WTI Returns")
-
         reg_df = run_macro_regressions(series, energy["WTI"], horizons=(1, 5, 21))
         if reg_df.empty:
             st.info("Not enough data to run regressions for this macro series.")
@@ -617,9 +713,130 @@ with tab_macro_analysis:
                     "R-squared": "{:.3f}"
                 })
             )
-
             st.markdown("**Interpretation:**")
             for _, row in reg_df.iterrows():
                 explanation = interpret_regression_row(row, selected_macro)
                 st.markdown(f"- {explanation}")
 
+# ---------------------------------------------------------
+# 12. MODELING TAB (MACD, RSI, ARIMA, GARCH placeholder)
+# ---------------------------------------------------------
+
+with tab_modeling:
+    st.title("Technical & Time-Series Modeling")
+
+    modeling_ticker = st.selectbox(
+        "Select ticker for modeling:",
+        ["CL=F"] + equities + etfs
+    )
+
+    @st.cache_data(show_spinner=True)
+    def load_single_ticker(ticker):
+        return yf.download(ticker, start="2000-01-01", auto_adjust=True, progress=False)["Close"].dropna()
+
+    price_series = load_single_ticker(modeling_ticker)
+
+    st.subheader(f"Price Series — {ticker_names.get(modeling_ticker, modeling_ticker)}")
+    fig_price = px.line(price_series, title="Price History", labels={"value": "Price", "index": "Date"})
+    fig_price.update_layout(hovermode="x unified")
+    st.plotly_chart(fig_price, use_container_width=True)
+
+    # MACD
+    st.subheader("MACD")
+    macd, signal_line, hist = compute_macd(price_series)
+    macd_df = pd.DataFrame({
+        "MACD": macd,
+        "Signal": signal_line,
+        "Histogram": hist
+    }).dropna()
+    fig_macd = px.line(macd_df[["MACD", "Signal"]], title="MACD & Signal")
+    fig_macd.update_layout(hovermode="x unified")
+    st.plotly_chart(fig_macd, use_container_width=True)
+
+    # RSI
+    st.subheader("RSI (14)")
+    rsi = compute_rsi(price_series, window=14)
+    fig_rsi = px.line(rsi, title="RSI (14)", labels={"value": "RSI", "index": "Date"})
+    fig_rsi.add_hline(y=70, line_dash="dash", line_color="red")
+    fig_rsi.add_hline(y=30, line_dash="dash", line_color="green")
+    fig_rsi.update_layout(hovermode="x unified")
+    st.plotly_chart(fig_rsi, use_container_width=True)
+
+    # ARIMA
+    st.subheader("ARIMA Forecast (Price)")
+    steps = st.slider("Forecast horizon (days)", 5, 60, 20)
+    fc, conf = fit_arima(price_series, order=(1,1,1), steps=steps)
+    if fc is None:
+        st.info("Not enough data to fit ARIMA model.")
+    else:
+        fc_index = pd.date_range(start=price_series.index[-1] + pd.Timedelta(days=1), periods=steps, freq="B")
+        fc_series = pd.Series(fc.values, index=fc_index, name="Forecast")
+        conf_df = conf.copy()
+        conf_df.index = fc_index
+
+        hist_df = price_series.rename("Price")
+        fig_arima = px.line(hist_df, title="ARIMA Forecast")
+        fig_arima.add_scatter(x=fc_series.index, y=fc_series.values, mode="lines", name="Forecast")
+        fig_arima.add_scatter(
+            x=conf_df.index, y=conf_df.iloc[:,0], mode="lines",
+            line=dict(dash="dash", color="gray"), name="Lower CI"
+        )
+        fig_arima.add_scatter(
+            x=conf_df.index, y=conf_df.iloc[:,1], mode="lines",
+            line=dict(dash="dash", color="gray"), name="Upper CI"
+        )
+        fig_arima.update_layout(hovermode="x unified")
+        st.plotly_chart(fig_arima, use_container_width=True)
+
+    # GARCH placeholder
+    st.subheader("GARCH Volatility Modeling (Placeholder)")
+    st.info("GARCH modeling can be added using the 'arch' library. This placeholder keeps the structure ready.")
+
+# ---------------------------------------------------------
+# 13. REGRESSIONS TAB (MULTI-FACTOR & ROLLING)
+# ---------------------------------------------------------
+
+with tab_regressions:
+    st.title("Advanced Regression Analysis")
+
+    macro_df = st.session_state.get("macro_df", pd.DataFrame())
+    if macro_df.empty:
+        st.warning("No macro data available. Go to the 'Macro Data' tab, enter your FRED API key, and load data.")
+    else:
+        energy = yf.download(
+            ["CL=F"],
+            start="1990-01-01",
+            auto_adjust=True,
+            progress=False
+        )["Close"]
+        wti = energy["CL=F"].rename("WTI").dropna()
+
+        st.subheader("Multi-Factor Regression (Macro Basket → Future WTI Returns)")
+        horizon = st.selectbox("Horizon (days)", [5, 21, 63], index=1)
+        model = run_multifactor_regression(macro_df, wti, horizon=horizon)
+        if model is None:
+            st.info("Not enough data to run multi-factor regression.")
+        else:
+            st.markdown(f"**R-squared:** {model.rsquared:.3f}")
+            coef_df = model.params.to_frame("Coefficient")
+            coef_df["p-value"] = model.pvalues
+            st.dataframe(coef_df.style.format({"Coefficient": "{:.4f}", "p-value": "{:.3f}"}))
+
+        st.subheader("Rolling Regression (Single Macro → WTI Returns)")
+        macro_list = list(macro_df.columns)
+        selected_macro_roll = st.selectbox("Select macro variable for rolling regression:", macro_list)
+        window = st.slider("Rolling window (days)", 60, 504, 252)
+        horizon_roll = st.selectbox("Horizon (days) for rolling regression", [5, 21], index=0)
+
+        roll_series = run_rolling_regression(macro_df[selected_macro_roll], wti, window=window, horizon=horizon_roll)
+        if roll_series.empty:
+            st.info("Not enough data to compute rolling regression.")
+        else:
+            fig_roll = px.line(
+                roll_series,
+                title=f"Rolling {window}-Day Beta: {selected_macro_roll} → WTI ({horizon_roll}-day returns)",
+                labels={"value": "Beta", "index": "Date"}
+            )
+            fig_roll.add_hline(y=0, line_width=1, line_color="black")
+            fig_roll.update_layout(hovermode="x unified")
+            st.plotly_chart(fig_roll, use_container_width=True)
