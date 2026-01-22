@@ -798,38 +798,43 @@ with tab_macro_analysis:
             st.info("No explanation available for this macro series.")
 
         # =========================================================
-        # REGRESSION: ΔMACRO → FUTURE CUMULATIVE WTI RETURNS
+        # REGRESSION: Monthly Macro Changes → Future Monthly WTI Returns
         # =========================================================
-        st.subheader("Regression: Macro Changes vs Future WTI Returns")
+        st.subheader("Regression: Macro Changes vs Future WTI Returns (Monthly Frequency)")
 
-        def run_macro_regressions_fixed(macro_series, wti_series, horizons=(1, 5, 21)):
+        def run_macro_regressions_monthly(macro_series, wti_series, horizons_months=(1, 3, 6)):
             # Ensure Series
             if isinstance(macro_series, pd.DataFrame):
                 macro_series = macro_series.iloc[:, 0]
             if isinstance(wti_series, pd.DataFrame):
                 wti_series = wti_series.iloc[:, 0]
 
-            macro_chg = macro_series.pct_change()
+            # Monthly resample
+            macro_m = macro_series.resample("M").last()
+            wti_m = wti_series.resample("M").last()
+
+            # Monthly % changes
+            macro_chg = macro_m.pct_change()
 
             results = []
 
-            for h in horizons:
-                # Future cumulative WTI return over next h days
-                future_ret = (wti_series.shift(-h) / wti_series - 1.0)
+            for m in horizons_months:
+                # Future cumulative WTI return over next m months
+                future_ret = (wti_m.shift(-m) / wti_m - 1.0)
 
                 df = pd.concat([macro_chg, future_ret], axis=1).dropna()
-                df.columns = ["macro_chg", f"future_ret_{h}"]
+                df.columns = ["macro_chg", f"future_ret_{m}m"]
 
                 if df.empty:
                     continue
 
                 X = sm.add_constant(df["macro_chg"])
-                y = df[f"future_ret_{h}"]
+                y = df[f"future_ret_{m}m"]
 
                 model = sm.OLS(y, X).fit()
 
                 results.append({
-                    "Horizon": h,
+                    "Horizon": m * 21,  # convert months → approx trading days
                     "Coefficient": model.params["macro_chg"],
                     "p-value": model.pvalues["macro_chg"],
                     "R-squared": model.rsquared
@@ -837,7 +842,8 @@ with tab_macro_analysis:
 
             return pd.DataFrame(results)
 
-        reg_df = run_macro_regressions_fixed(series, energy["WTI"], horizons=(1, 5, 21))
+        # Run the monthly regression
+        reg_df = run_macro_regressions_monthly(series, energy["WTI"], horizons_months=(1, 3, 6))
 
         if reg_df.empty:
             st.info("Not enough data to run regressions for this macro series.")
@@ -852,7 +858,7 @@ with tab_macro_analysis:
 
             st.markdown("**Interpretation:**")
             for _, row in reg_df.iterrows():
-                explanation = interpret_regression_row(row, selected_macro)  # uses row["Horizon"]
+                explanation = interpret_regression_row(row, selected_macro)
                 st.markdown(f"- {explanation}")
 
 # ---------------------------------------------------------
