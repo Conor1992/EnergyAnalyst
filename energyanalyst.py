@@ -673,7 +673,9 @@ with tab_macro_analysis:
     if macro_df.empty:
         st.warning("No macro data available. Go to the 'Macro Data' tab, enter your FRED API key, and load data.")
     else:
+        # ----------------------------
         # Load WTI + Brent (Series-safe)
+        # ----------------------------
         energy = yf.download(
             ["CL=F", "BZ=F"],
             start="1990-01-01",
@@ -796,28 +798,33 @@ with tab_macro_analysis:
             st.info("No explanation available for this macro series.")
 
         # =========================================================
-        # REGRESSION: ΔMACRO → ΔWTI FUTURE RETURNS
+        # REGRESSION: ΔMACRO → FUTURE CUMULATIVE WTI RETURNS
         # =========================================================
         st.subheader("Regression: Macro Changes vs Future WTI Returns")
 
         def run_macro_regressions_fixed(macro_series, wti_series, horizons=(1, 5, 21)):
-            macro_chg = macro_series.pct_change()
-            wti_ret = wti_series.pct_change()
+            # Ensure Series
+            if isinstance(macro_series, pd.DataFrame):
+                macro_series = macro_series.iloc[:, 0]
+            if isinstance(wti_series, pd.DataFrame):
+                wti_series = wti_series.iloc[:, 0]
 
-            df = pd.concat([macro_chg, wti_ret], axis=1).dropna()
-            df.columns = ["macro_chg", "wti_ret"]
+            macro_chg = macro_series.pct_change()
 
             results = []
 
             for h in horizons:
-                df[f"future_ret_{h}"] = df["wti_ret"].shift(-h)
-                sub = df.dropna()
+                # Future cumulative WTI return over next h days
+                future_ret = (wti_series.shift(-h) / wti_series - 1.0)
 
-                if sub.empty:
+                df = pd.concat([macro_chg, future_ret], axis=1).dropna()
+                df.columns = ["macro_chg", f"future_ret_{h}"]
+
+                if df.empty:
                     continue
 
-                X = sm.add_constant(sub["macro_chg"])
-                y = sub[f"future_ret_{h}"]
+                X = sm.add_constant(df["macro_chg"])
+                y = df[f"future_ret_{h}"]
 
                 model = sm.OLS(y, X).fit()
 
@@ -845,9 +852,8 @@ with tab_macro_analysis:
 
             st.markdown("**Interpretation:**")
             for _, row in reg_df.iterrows():
-                explanation = interpret_regression_row(row, selected_macro)
+                explanation = interpret_regression_row(row, selected_macro)  # uses row["Horizon"]
                 st.markdown(f"- {explanation}")
-
 
 # ---------------------------------------------------------
 # 12. TECHNICALS TAB (MACD, RSI, ROLLING STATS)
