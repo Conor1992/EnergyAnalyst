@@ -1103,6 +1103,10 @@ with tab_regressions:
         st.header("Custom OLS Regression (Price Levels vs Macro Levels)")
 
         def run_ols_regression_streamlit(price_series, macro_df, price_col="Price"):
+            # Ensure price_series is a Series
+            if isinstance(price_series, pd.DataFrame):
+                price_series = price_series.squeeze()
+
             df = pd.concat([price_series.rename(price_col), macro_df], axis=1).dropna()
 
             if df.empty:
@@ -1189,6 +1193,17 @@ with tab_regressions:
         # =========================================================
         st.header("Rolling Single-Factor Beta vs WTI")
 
+        # Load WTI once, Series-safe
+        energy = yf.download(
+            ["CL=F"],
+            start="1990-01-01",
+            auto_adjust=True,
+            progress=False
+        )["Close"]
+        if isinstance(energy, pd.DataFrame):
+            energy = energy.squeeze()
+        energy.name = "WTI"
+
         selected_macro_rb = st.selectbox(
             "Select macro variable:",
             list(macro_df.columns),
@@ -1200,28 +1215,15 @@ with tab_regressions:
 
         # --- SERIES-SAFE MACRO CHANGE ---
         macro_chg_rb = macro_df[selected_macro_rb].pct_change()
-
-        # Force to Series
         if isinstance(macro_chg_rb, pd.DataFrame):
-            macro_chg_rb = macro_chg_rb.squeeze()
-
-        macro_chg_rb = pd.Series(
-            macro_chg_rb.values,
-            index=macro_chg_rb.index,
-            name="macro_chg"
-        )
+            macro_chg_rb = macro_chg_rb.iloc[:, 0]
+        macro_chg_rb.name = "macro_chg"
 
         # --- SERIES-SAFE WTI RETURNS ---
         wti_ret_rb = energy.pct_change()
-
         if isinstance(wti_ret_rb, pd.DataFrame):
-            wti_ret_rb = wti_ret_rb.squeeze()
-
-        wti_ret_rb = pd.Series(
-            wti_ret_rb.values,
-            index=wti_ret_rb.index,
-            name="wti_ret"
-        )
+            wti_ret_rb = wti_ret_rb.iloc[:, 0]
+        wti_ret_rb.name = "wti_ret"
 
         # Build DataFrame safely
         df_rb = pd.concat([macro_chg_rb, wti_ret_rb], axis=1).dropna()
@@ -1245,27 +1247,30 @@ with tab_regressions:
 
             beta_series = pd.Series(betas, index=idx, name="Rolling Beta")
 
-            fig_beta = px.line(
-                beta_series,
-                title=f"Rolling {window_rb}-Day Beta of {selected_macro_rb} vs WTI",
-                labels={"value": "Beta", "index": "Date"}
-            )
-            fig_beta.add_hline(y=0, line_width=1, line_color="black")
-            fig_beta.update_layout(hovermode="x unified")
-            st.plotly_chart(fig_beta, use_container_width=True)
-
-            st.subheader("Rolling Beta Interpretation")
-
-            latest_beta = beta_series.iloc[-1]
-
-            if latest_beta > 0:
-                st.markdown(f"**Latest beta:** {latest_beta:.3f} → When **{selected_macro_rb}** rises, WTI tends to rise.")
+            if beta_series.empty:
+                st.info("Not enough data to compute rolling betas.")
             else:
-                st.markdown(f"**Latest beta:** {latest_beta:.3f} → When **{selected_macro_rb}** rises, WTI tends to fall.")
+                fig_beta = px.line(
+                    beta_series,
+                    title=f"Rolling {window_rb}-Day Beta of {selected_macro_rb} vs WTI",
+                    labels={"value": "Beta", "index": "Date"}
+                )
+                fig_beta.add_hline(y=0, line_width=1, line_color="black")
+                fig_beta.update_layout(hovermode="x unified")
+                st.plotly_chart(fig_beta, use_container_width=True)
 
-            st.markdown("""
-            **How to read the chart:**  
-            - Rising beta → macro factor is becoming more influential  
-            - Falling beta → macro factor influence is weakening  
-            - Beta crossing zero → regime shift in macro–crude relationship  
-            """)
+                st.subheader("Rolling Beta Interpretation")
+
+                latest_beta = beta_series.iloc[-1]
+
+                if latest_beta > 0:
+                    st.markdown(f"**Latest beta:** {latest_beta:.3f} → When **{selected_macro_rb}** rises, WTI tends to rise.")
+                else:
+                    st.markdown(f"**Latest beta:** {latest_beta:.3f} → When **{selected_macro_rb}** rises, WTI tends to fall.")
+
+                st.markdown("""
+                **How to read the chart:**  
+                - Rising beta → macro factor is becoming more influential  
+                - Falling beta → macro factor influence is weakening  
+                - Beta crossing zero → regime shift in macro–crude relationship  
+                """)
