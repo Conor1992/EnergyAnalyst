@@ -851,7 +851,7 @@ with tab_arimax:
         selected_macros_arimax = st.multiselect(
             "Macro variables to include as exogenous:",
             macro_list,
-            default=macro_list[:3]
+            default=macro_list[:3], key="arimax_macro_select"
         )
 
         if not selected_macros_arimax:
@@ -924,7 +924,7 @@ with tab_garchx:
             selected_macros_garch = st.multiselect(
                 "Macro variables to include as exogenous:",
                 macro_list,
-                default=macro_list[:3]
+                default=macro_list[:3], key = "garch_macro_select"
             )
 
             if not selected_macros_garch:
