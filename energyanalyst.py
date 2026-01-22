@@ -1069,7 +1069,7 @@ with tab_regressions:
         )
 
         window_rb = st.slider("Rolling window (days)", 60, 504, 252)
-        horizon_rb = st.slider("Horizon (days)", 1, 60, 5)
+        horizon_rb = st.slider("Horizon (days)", 1, 60, 5, key="rolling_horizon_slider")
 
         series_rb = macro_df[selected_macro_rb].dropna()
 
