@@ -939,7 +939,7 @@ with tab_arimax:
                         st.subheader("Forecast Interpretation")
 
                         hist = price_aligned.dropna()
-                        combined = hist.append(pd.Series([fc_series.iloc[-1]], index=[fc_index[-1]]))
+                        combined = pd.concat([ hist, pd.Series([fc_series.iloc[-1]], index=[fc_index[-1]]) ])
                         rank_pct = combined.rank(pct=True).iloc[-1] * 100
 
                         st.markdown(
