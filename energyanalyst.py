@@ -836,7 +836,7 @@ with tab_arimax:
 
     macro_df = st.session_state.get("macro_df", pd.DataFrame())
     if macro_df.empty:
-        st.warning("No macro data available. Go to the 'Macro Data' tab, enter your FRED API key, and load data.")
+        st.warning("No macro data available. Load macro data first.")
     else:
         arimax_ticker = st.selectbox(
             "Select ticker for ARIMAX:",
@@ -845,6 +845,10 @@ with tab_arimax:
         )
 
         price_series = load_single_ticker(arimax_ticker)
+
+        # Ensure Series
+        if isinstance(price_series, pd.DataFrame):
+            price_series = price_series.squeeze()
 
         st.subheader("Select Macro Exogenous Variables")
         macro_list = list(macro_df.columns)
@@ -859,13 +863,11 @@ with tab_arimax:
             st.info("Select at least one macro variable to run ARIMAX.")
         else:
             exog = macro_df[selected_macros_arimax].dropna(how="all")
-            # Align macro exogenous with price
-            # Ensure price_series is a Series before renaming
-            if isinstance(price_series, pd.DataFrame):
-                price_series = price_series.squeeze()
 
-            aligned = exog.join(price_series.rename("Price").to_frame(), how="inner").dropna()
+            # SAFE: convert price_series to DataFrame with correct name
+            price_df = price_series.rename("Price").to_frame()
 
+            aligned = exog.join(price_df, how="inner").dropna()
 
             if aligned.empty:
                 st.info("No overlapping data between selected macro series and price.")
@@ -888,7 +890,7 @@ with tab_arimax:
                         )
 
                     if fc_mean is None:
-                        st.info("Not enough data to fit ARIMAX with the chosen settings.")
+                        st.info("Not enough data to fit ARIMAX.")
                     else:
                         st.subheader("ARIMAX Forecast")
 
@@ -899,7 +901,7 @@ with tab_arimax:
                         )
                         fc_series = pd.Series(fc_mean.values, index=fc_index, name="Forecast")
 
-                        # ✅ FIX: ensure we treat price as a Series, then to_frame()
+                        # SAFE: historical price
                         hist_df = price_aligned.rename("Price").to_frame()
                         fc_df = fc_series.to_frame()
 
@@ -935,11 +937,11 @@ with tab_garchx:
     st.title("GARCH‑X Volatility Modeling")
 
     if not ARCH_AVAILABLE:
-        st.warning("The 'arch' package is not installed. Install it to use GARCH‑X.")
+        st.warning("The 'arch' package is not installed.")
     else:
         macro_df = st.session_state.get("macro_df", pd.DataFrame())
         if macro_df.empty:
-            st.warning("No macro data available. Go to the 'Macro Data' tab, enter your FRED API key, and load data.")
+            st.warning("Load macro data first.")
         else:
             garch_ticker = st.selectbox(
                 "Select ticker for GARCH‑X:",
@@ -948,7 +950,16 @@ with tab_garchx:
             )
 
             price_series = load_single_ticker(garch_ticker)
+
+            # SAFE: ensure Series
+            if isinstance(price_series, pd.DataFrame):
+                price_series = price_series.squeeze()
+
             returns = price_series.pct_change().dropna()
+
+            # SAFE: ensure returns is Series
+            if isinstance(returns, pd.DataFrame):
+                returns = returns.squeeze()
 
             st.subheader("Select Macro Exogenous Variables")
             macro_list = list(macro_df.columns)
@@ -960,13 +971,17 @@ with tab_garchx:
             )
 
             if not selected_macros_garch:
-                st.info("Select at least one macro variable to run GARCH‑X.")
+                st.info("Select at least one macro variable.")
             else:
                 exog = macro_df[selected_macros_garch].dropna(how="all")
-                aligned = exog.join(returns.rename("ret"), how="inner").dropna()
+
+                # SAFE: convert returns to DataFrame
+                returns_df = returns.rename("ret").to_frame()
+
+                aligned = exog.join(returns_df, how="inner").dropna()
 
                 if aligned.empty:
-                    st.info("No overlapping data between selected macro series and returns.")
+                    st.info("No overlapping data between macro series and returns.")
                 else:
                     ret_aligned = aligned["ret"]
                     exog_aligned = aligned.drop(columns=["ret"])
@@ -978,9 +993,10 @@ with tab_garchx:
                             vol_fc, res = fit_garch_x(ret_aligned, exog_aligned, steps=steps)
 
                         if vol_fc is None:
-                            st.info("Not enough data to fit GARCH‑X with the chosen settings.")
+                            st.info("Not enough data to fit GARCH‑X.")
                         else:
                             st.subheader("GARCH‑X Volatility Forecast")
+
                             fc_index = pd.date_range(
                                 start=ret_aligned.index[-1] + pd.Timedelta(days=1),
                                 periods=steps,
@@ -1005,7 +1021,7 @@ with tab_regressions:
 
     macro_df = st.session_state.get("macro_df", pd.DataFrame())
     if macro_df.empty:
-        st.warning("No macro data available. Go to the 'Macro Data' tab, enter your FRED API key, and load data.")
+        st.warning("Load macro data first.")
     else:
         st.subheader("Multifactor Regression vs WTI")
 
@@ -1015,21 +1031,31 @@ with tab_regressions:
             auto_adjust=True,
             progress=False
         )["Close"]
+
+        # SAFE: ensure Series
+        if isinstance(energy, pd.DataFrame):
+            energy = energy.squeeze()
+
         energy.name = "WTI"
 
         macro_list = list(macro_df.columns)
         selected_macros_multi = st.multiselect(
-            "Select macro variables for multifactor regression:",
+            "Select macro variables:",
             macro_list,
             key="multi_macro_select"
         )
 
-        horizon_multi = st.slider("Horizon (days) for future returns", 1, 60, 5)
+        horizon_multi = st.slider("Horizon (days)", 1, 60, 5)
 
         if selected_macros_multi:
-            model = run_multifactor_regression(macro_df, energy, selected_macros_multi, horizon=horizon_multi)
+            model = run_multifactor_regression(
+                macro_df,
+                energy,
+                selected_macros_multi,
+                horizon=horizon_multi
+            )
             if model is None:
-                st.info("Not enough overlapping data to run multifactor regression.")
+                st.info("Not enough overlapping data.")
             else:
                 st.subheader("Regression Summary")
                 st.text(model.summary())
@@ -1037,20 +1063,21 @@ with tab_regressions:
         st.subheader("Rolling Single-Factor Beta vs WTI")
 
         selected_macro_rb = st.selectbox(
-            "Select macro variable for rolling regression:",
+            "Select macro variable:",
             macro_list,
             key="rolling_macro_select"
         )
 
         window_rb = st.slider("Rolling window (days)", 60, 504, 252)
-        horizon_rb = st.slider("Horizon (days) for future returns (rolling)", 1, 60, 5)
+        horizon_rb = st.slider("Horizon (days)", 1, 60, 5)
 
         series_rb = macro_df[selected_macro_rb].dropna()
+
         aligned_rb = pd.concat([series_rb, energy], axis=1).dropna()
         aligned_rb.columns = [selected_macro_rb, "WTI"]
 
         if aligned_rb.empty:
-            st.info("Not enough overlapping data for rolling regression.")
+            st.info("Not enough overlapping data.")
         else:
             beta_series = run_rolling_regression(
                 aligned_rb[selected_macro_rb],
@@ -1058,12 +1085,13 @@ with tab_regressions:
                 window=window_rb,
                 horizon=horizon_rb
             )
+
             if beta_series.empty:
                 st.info("Not enough data to compute rolling betas.")
             else:
                 fig_beta = px.line(
                     beta_series,
-                    title=f"Rolling {window_rb}-Day Beta of {selected_macro_rb} vs WTI (Horizon {horizon_rb} days)",
+                    title=f"Rolling {window_rb}-Day Beta of {selected_macro_rb} vs WTI",
                     labels={"value": "Beta", "index": "Date"}
                 )
                 fig_beta.add_hline(y=0, line_width=1, line_color="black")
