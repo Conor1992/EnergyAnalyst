@@ -494,7 +494,7 @@ def fit_garch_x(return_series, exog_df, p=1, o=0, q=1, dist="normal", steps=10):
         x=exog
     )
     res = am.fit(disp="off")
-    fc = res.forecast(horizon=steps, x=exog.iloc[[-1]].values)
+    fc = res.forecast(horizon=steps)
     vol_fc = np.sqrt(fc.variance.values[-1, :])
     return vol_fc, res
 
