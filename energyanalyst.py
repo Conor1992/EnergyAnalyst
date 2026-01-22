@@ -840,15 +840,23 @@ with tab_arimax:
     else:
         arimax_ticker = st.selectbox(
             "Select ticker for ARIMAX:",
-            ["CL=F"] + equities + etfs,
+            ["CL=F", "BZ=F"] + futures + equities + etfs,
             key="arimax_ticker"
         )
 
         price_series = load_single_ticker(arimax_ticker)
-
-        # Ensure Series
         if isinstance(price_series, pd.DataFrame):
             price_series = price_series.squeeze()
+
+        st.subheader("ARIMA(p, d, q) Model Structure")
+        st.markdown("""
+        **ARIMA(p, d, q)** decomposes price behaviour into:
+        - **p (autoregressive lags):** how many past prices influence the next price  
+        - **d (differencing):** how many times the series is differenced to remove trend  
+        - **q (moving-average lags):** how many past shocks influence the next price  
+
+        This structure captures **trend**, **persistence**, and **shock propagation**.
+        """)
 
         st.subheader("Select Macro Exogenous Variables")
         macro_list = list(macro_df.columns)
@@ -863,10 +871,7 @@ with tab_arimax:
             st.info("Select at least one macro variable to run ARIMAX.")
         else:
             exog = macro_df[selected_macros_arimax].dropna(how="all")
-
-            # SAFE: convert price_series to DataFrame with correct name
             price_df = price_series.rename("Price").to_frame()
-
             aligned = exog.join(price_df, how="inner").dropna()
 
             if aligned.empty:
@@ -901,11 +906,10 @@ with tab_arimax:
                         )
                         fc_series = pd.Series(fc_mean.values, index=fc_index, name="Forecast")
 
-                        # SAFE: historical price
                         hist_df = price_aligned.rename("Price").to_frame()
                         fc_df = fc_series.to_frame()
 
-                        fig_fc = px.line(hist_df, title="Price History & ARIMAX Forecast")
+                        fig_fc = px.line(hist_df, title=f"{ticker_names.get(arimax_ticker, arimax_ticker)} — Price & ARIMAX Forecast")
                         fig_fc.add_scatter(
                             x=fc_df.index,
                             y=fc_df["Forecast"],
@@ -929,6 +933,27 @@ with tab_arimax:
                         fig_fc.update_layout(hovermode="x unified")
                         st.plotly_chart(fig_fc, use_container_width=True)
 
+                        # -----------------------------
+                        # Forecast Percentile Analysis
+                        # -----------------------------
+                        st.subheader("Forecast Interpretation")
+
+                        hist = price_aligned.dropna()
+                        combined = hist.append(pd.Series([fc_series.iloc[-1]], index=[fc_index[-1]]))
+                        rank_pct = combined.rank(pct=True).iloc[-1] * 100
+
+                        st.markdown(
+                            f"Last forecast value sits at the **{rank_pct:.1f}th percentile** "
+                            f"of historical prices."
+                        )
+
+                        if rank_pct > 70:
+                            st.markdown("→ Model expects **relative strength** vs history.")
+                        elif rank_pct < 30:
+                            st.markdown("→ Model expects **relative weakness** vs history.")
+                        else:
+                            st.markdown("→ Model expects **neutral / mid‑range** pricing.")
+
 # ---------------------------------------------------------
 # 14. GARCH‑X TAB
 # ---------------------------------------------------------
@@ -945,21 +970,30 @@ with tab_garchx:
         else:
             garch_ticker = st.selectbox(
                 "Select ticker for GARCH‑X:",
-                ["CL=F"] + equities + etfs,
+                ["CL=F", "BZ=F"] + futures + equities + etfs,
                 key="garch_ticker"
             )
 
             price_series = load_single_ticker(garch_ticker)
-
-            # SAFE: ensure Series
             if isinstance(price_series, pd.DataFrame):
                 price_series = price_series.squeeze()
 
             returns = price_series.pct_change().dropna()
-
-            # SAFE: ensure returns is Series
             if isinstance(returns, pd.DataFrame):
                 returns = returns.squeeze()
+
+            st.subheader("GARCH‑X Model Interpretation")
+            st.markdown("""
+            **GARCH‑X** models volatility, not direction.
+
+            - **ω (omega):** baseline volatility  
+            - **α (alpha):** sensitivity to shocks (yesterday’s surprise)  
+            - **β (beta):** persistence of volatility (how long shocks last)  
+            - **X:** macro factors that shift volatility regimes  
+
+            High α → markets react strongly to shocks  
+            High β → volatility is persistent  
+            """)
 
             st.subheader("Select Macro Exogenous Variables")
             macro_list = list(macro_df.columns)
@@ -974,10 +1008,7 @@ with tab_garchx:
                 st.info("Select at least one macro variable.")
             else:
                 exog = macro_df[selected_macros_garch].dropna(how="all")
-
-                # SAFE: convert returns to DataFrame
                 returns_df = returns.rename("ret").to_frame()
-
                 aligned = exog.join(returns_df, how="inner").dropna()
 
                 if aligned.empty:
@@ -1006,11 +1037,53 @@ with tab_garchx:
 
                             fig_vol = px.line(
                                 vol_series,
-                                title="Forecast Volatility (GARCH‑X)",
+                                title=f"{ticker_names.get(garch_ticker, garch_ticker)} — Forecast Volatility (GARCH‑X)",
                                 labels={"value": "Volatility", "index": "Date"}
                             )
                             fig_vol.update_layout(hovermode="x unified")
                             st.plotly_chart(fig_vol, use_container_width=True)
+
+                            # -----------------------------
+                            # Volatility Regime Analysis
+                            # -----------------------------
+                            st.subheader("Volatility Regime Interpretation")
+
+                            hist_vol = ret_aligned.rolling(21).std().dropna()
+                            if not hist_vol.empty:
+                                combined = hist_vol.append(pd.Series([vol_series.iloc[0]], index=[fc_index[0]]))
+                                rank_pct = combined.rank(pct=True).iloc[-1] * 100
+
+                                st.markdown(
+                                    f"Near‑term forecast volatility is at the **{rank_pct:.1f}th percentile** "
+                                    f"of recent 21‑day volatility."
+                                )
+
+                                if rank_pct > 70:
+                                    st.markdown("→ Indicates a **high‑volatility regime** (risk‑off / stress).")
+                                elif rank_pct < 30:
+                                    st.markdown("→ Indicates a **low‑volatility regime** (calm conditions).")
+                                else:
+                                    st.markdown("→ Indicates a **mid‑range volatility regime**.")
+                            else:
+                                st.markdown("Not enough history to benchmark volatility regimes.")
+
+                            # -----------------------------
+                            # Trend & Directional Context
+                            # -----------------------------
+                            st.subheader("Trend & Directional Context")
+                            last_ret = ret_aligned.iloc[-1] * 100
+                            st.markdown(
+                                f"Last daily return was **{last_ret:.2f}%**. "
+                                "GARCH‑X does **not** forecast direction, but high volatility combined with "
+                                "negative recent returns often signals stressed downside regimes."
+                            )
+
+                            # -----------------------------
+                            # GARCH Parameter Snapshot
+                            # -----------------------------
+                            if res is not None:
+                                st.subheader("GARCH Parameter Snapshot")
+                                st.text(res.summary())
 
 # ---------------------------------------------------------
 # 15. REGRESSIONS TAB (MULTIFACTOR & ROLLING BETA)
@@ -1031,21 +1104,18 @@ with tab_regressions:
             auto_adjust=True,
             progress=False
         )["Close"]
-
-        # SAFE: ensure Series
         if isinstance(energy, pd.DataFrame):
             energy = energy.squeeze()
-
         energy.name = "WTI"
 
         macro_list = list(macro_df.columns)
         selected_macros_multi = st.multiselect(
-            "Select macro variables:",
+            "Select macro variables for multifactor regression:",
             macro_list,
             key="multi_macro_select"
         )
 
-        horizon_multi = st.slider("Horizon (days)", 1, 60, 5)
+        horizon_multi = st.slider("Horizon (days) for future returns", 1, 60, 5)
 
         if selected_macros_multi:
             model = run_multifactor_regression(
@@ -1060,6 +1130,36 @@ with tab_regressions:
                 st.subheader("Regression Summary")
                 st.text(model.summary())
 
+                st.subheader("Economic Interpretation")
+
+                params = model.params
+                pvals = model.pvalues
+                r2 = model.rsquared
+
+                st.markdown(f"**R² = {r2:.3f}** — typical macro–crude models range **0.20–0.50**.")
+
+                st.markdown("### Coefficient Signs & Economic Meaning")
+                for name in selected_macros_multi:
+                    if name in params.index:
+                        coef = params[name]
+                        sign = "positive" if coef > 0 else "negative"
+                        st.markdown(f"- **{name}**: {sign} coefficient ({coef:.4f})")
+
+                st.markdown("### Statistical Significance (p-values)")
+                for name in selected_macros_multi:
+                    if name in pvals.index:
+                        p = pvals[name]
+                        signif = "SIGNIFICANT" if p < 0.05 else "not significant"
+                        st.markdown(f"- **{name}**: p = {p:.4f} → {signif}")
+
+                st.markdown("### Economic Interpretation Summary")
+                st.markdown("""
+                - **Positive coefficient** → when this macro factor rises, crude tends to rise  
+                - **Negative coefficient** → when this macro factor rises, crude tends to fall  
+                - **Significant variables** → real explanatory power  
+                - **Non‑significant variables** → weak or unstable relationship  
+                """)
+
         st.subheader("Rolling Single-Factor Beta vs WTI")
 
         selected_macro_rb = st.selectbox(
@@ -1072,7 +1172,6 @@ with tab_regressions:
         horizon_rb = st.slider("Horizon (days)", 1, 60, 5, key="rolling_horizon_slider")
 
         series_rb = macro_df[selected_macro_rb].dropna()
-
         aligned_rb = pd.concat([series_rb, energy], axis=1).dropna()
         aligned_rb.columns = [selected_macro_rb, "WTI"]
 
