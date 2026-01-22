@@ -1086,11 +1086,11 @@ with tab_garchx:
                                 st.text(res.summary())
 
 # ---------------------------------------------------------
-# 15. REGRESSIONS TAB (MULTIFACTOR & ROLLING BETA)
+# 15. REGRESSIONS TAB (MULTIFACTOR, ROLLING BETA, CUSTOM OLS)
 # ---------------------------------------------------------
 
 with tab_regressions:
-    st.title("Multifactor & Rolling Regression")
+    st.title("Regression Analysis Suite")
 
     macro_df = st.session_state.get("macro_df", pd.DataFrame())
     if macro_df.empty:
@@ -1100,7 +1100,7 @@ with tab_regressions:
         # ---------------------------------------------------------
         # MULTIFACTOR REGRESSION (MACRO CHANGES → FUTURE RETURNS)
         # ---------------------------------------------------------
-        st.subheader("Multifactor Regression vs WTI (Macro Changes → Future Returns)")
+        st.header("Multifactor Regression (Macro Changes → Future WTI Returns)")
 
         # Load WTI
         energy = yf.download(
@@ -1154,7 +1154,7 @@ with tab_regressions:
                 # ---------------------------------------------------------
                 # EXPLAINABILITY BLOCK
                 # ---------------------------------------------------------
-                st.subheader("Economic Interpretation")
+                st.subheader("Interpretation")
 
                 params = model.params
                 pvals = model.pvalues
@@ -1196,7 +1196,7 @@ with tab_regressions:
         # ---------------------------------------------------------
         # ROLLING BETA (MACRO CHANGES → FUTURE RETURNS)
         # ---------------------------------------------------------
-        st.subheader("Rolling Single-Factor Beta vs WTI")
+        st.header("Rolling Single-Factor Beta vs WTI")
 
         selected_macro_rb = st.selectbox(
             "Select macro variable:",
@@ -1263,7 +1263,107 @@ with tab_regressions:
                     )
 
                 st.markdown("""
+                **How to read the chart:**  
                 - Rising beta → macro factor is becoming more influential  
                 - Falling beta → macro factor influence is weakening  
                 - Beta crossing zero → regime shift in macro–crude relationship  
                 """)
+
+        # ---------------------------------------------------------
+        # CUSTOM OLS REGRESSION (LEVELS → LEVELS)
+        # ---------------------------------------------------------
+        st.header("Custom OLS Regression (Price Levels vs Macro Levels)")
+
+        # Helper function
+        def run_ols_regression_streamlit(price_series, macro_df, price_col="Price"):
+            df = pd.concat([price_series.rename(price_col), macro_df], axis=1).dropna()
+
+            if df.empty:
+                st.warning("No overlapping data between price series and macro variables.")
+                return None
+
+            y = df[price_col]
+            X = df.drop(columns=[price_col])
+            X = sm.add_constant(X)
+
+            model = sm.OLS(y, X).fit()
+
+            st.subheader(f"OLS Regression Results — {price_col}")
+            st.text(model.summary())
+
+            st.subheader("Interpretation")
+
+            params = model.params
+            pvals = model.pvalues
+            r2 = model.rsquared
+
+            st.markdown("### 1. Coefficient Signs & Economic Meaning")
+            for var, coef in params.items():
+                if var == "const":
+                    continue
+                direction = "positive" if coef > 0 else "negative"
+                st.markdown(f"- **{var}**: {direction} coefficient ({coef:.4f})")
+
+            st.markdown("""
+            **Meaning:**  
+            - Positive coefficient → when this macro factor rises, crude tends to rise  
+            - Negative coefficient → when this macro factor rises, crude tends to fall  
+            """)
+
+            st.markdown("### 2. Statistical Significance (p-values)")
+            for var, pval in pvals.items():
+                if var == "const":
+                    continue
+                sig = "SIGNIFICANT" if pval < 0.05 else "not significant"
+                st.markdown(f"- **{var}**: p = {pval:.4f} → {sig}")
+
+            st.markdown("""
+            **Meaning:**  
+            - Significant variables have real explanatory power  
+            - Non‑significant variables may not meaningfully drive crude prices  
+            """)
+
+            st.markdown("### 3. R-squared Interpretation")
+            st.markdown(f"- **R² = {r2:.3f}**")
+            st.markdown("""
+            - Shows how much of crude price variation is explained by macro factors  
+            - Typical R² for crude vs macro is **0.20–0.50** depending on regime  
+            """)
+
+            st.markdown("### 4. Economic Interpretation Summary")
+            st.markdown("""
+            - USD Index: usually negative → stronger USD pressures crude lower  
+            - 10Y Yield: often negative → higher rates tighten financial conditions  
+            - VIX: typically negative → risk‑off reduces demand expectations  
+            - If coefficients match these signs → model is economically consistent  
+            """)
+
+            return model
+
+        # User interface
+        ols_price_ticker = st.selectbox(
+            "Select energy price for OLS:",
+            ["CL=F", "BZ=F"] + futures + equities + etfs,
+            key="ols_price_ticker"
+        )
+
+        ols_price_series = load_single_ticker(ols_price_ticker)
+        if isinstance(ols_price_series, pd.DataFrame):
+            ols_price_series = ols_price_series.squeeze()
+
+        ols_macro_vars = st.multiselect(
+            "Select macro variables for OLS regression:",
+            list(macro_df.columns),
+            key="ols_macro_vars"
+        )
+
+        if ols_macro_vars:
+            macro_subset = macro_df[ols_macro_vars].dropna(how="all")
+
+            run_ols_regression_streamlit(
+                price_series=ols_price_series,
+                macro_df=macro_subset,
+                price_col=ticker_names.get(ols_price_ticker, ols_price_ticker)
+            )
+        else:
+            st.info("Select at least one macro variable to run OLS regression.")
