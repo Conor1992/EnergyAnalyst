@@ -860,7 +860,12 @@ with tab_arimax:
         else:
             exog = macro_df[selected_macros_arimax].dropna(how="all")
             # Align macro exogenous with price
-            aligned = exog.join(price_series.rename("Price"), how="inner").dropna()
+            # Ensure price_series is a Series before renaming
+            if isinstance(price_series, pd.DataFrame):
+                price_series = price_series.squeeze()
+
+            aligned = exog.join(price_series.rename("Price").to_frame(), how="inner").dropna()
+
 
             if aligned.empty:
                 st.info("No overlapping data between selected macro series and price.")
