@@ -368,7 +368,7 @@ def run_macro_regressions(macro_series, wti_series, horizons=(1, 5, 21)):
     return pd.DataFrame(results)
 
 def interpret_regression_row(row, macro_name):
-    h = int(row["Horizon (days)"])
+    h = int(row["Horizon"])
     coef = row["Coefficient"]
     p = row["p-value"]
     r2 = row["R-squared"]
