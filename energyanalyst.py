@@ -1096,8 +1096,13 @@ with tab_regressions:
     if macro_df.empty:
         st.warning("Load macro data first.")
     else:
-        st.subheader("Multifactor Regression vs WTI")
 
+        # ---------------------------------------------------------
+        # MULTIFACTOR REGRESSION (MACRO CHANGES → FUTURE RETURNS)
+        # ---------------------------------------------------------
+        st.subheader("Multifactor Regression vs WTI (Macro Changes → Future Returns)")
+
+        # Load WTI
         energy = yf.download(
             ["CL=F"],
             start="1990-01-01",
@@ -1107,6 +1112,9 @@ with tab_regressions:
         if isinstance(energy, pd.DataFrame):
             energy = energy.squeeze()
         energy.name = "WTI"
+
+        # Compute WTI returns
+        wti_ret = energy.pct_change()
 
         macro_list = list(macro_df.columns)
         selected_macros_multi = st.multiselect(
@@ -1118,25 +1126,42 @@ with tab_regressions:
         horizon_multi = st.slider("Horizon (days) for future returns", 1, 60, 5)
 
         if selected_macros_multi:
-            model = run_multifactor_regression(
-                macro_df,
-                energy,
-                selected_macros_multi,
-                horizon=horizon_multi
-            )
-            if model is None:
+
+            # Prepare macro changes
+            macro_changes = macro_df[selected_macros_multi].pct_change()
+
+            # Align everything
+            df = pd.concat([macro_changes, wti_ret], axis=1).dropna()
+            df.columns = selected_macros_multi + ["wti_ret"]
+
+            # Compute future returns
+            df["future_ret"] = df["wti_ret"].shift(-horizon_multi)
+            df = df.dropna()
+
+            if df.empty:
                 st.info("Not enough overlapping data.")
             else:
+                # Standardize predictors
+                X = (df[selected_macros_multi] - df[selected_macros_multi].mean()) / df[selected_macros_multi].std()
+                X = sm.add_constant(X)
+                y = df["future_ret"]
+
+                model = sm.OLS(y, X).fit()
+
                 st.subheader("Regression Summary")
                 st.text(model.summary())
 
+                # ---------------------------------------------------------
+                # EXPLAINABILITY BLOCK
+                # ---------------------------------------------------------
                 st.subheader("Economic Interpretation")
 
                 params = model.params
                 pvals = model.pvalues
                 r2 = model.rsquared
 
-                st.markdown(f"**R² = {r2:.3f}** — typical macro–crude models range **0.20–0.50**.")
+                st.markdown(f"### Model Fit")
+                st.markdown(f"**R² = {r2:.3f}** — typical macro–crude models range **0.05–0.30** for daily data.")
 
                 st.markdown("### Coefficient Signs & Economic Meaning")
                 for name in selected_macros_multi:
@@ -1160,6 +1185,17 @@ with tab_regressions:
                 - **Non‑significant variables** → weak or unstable relationship  
                 """)
 
+                st.markdown("### Macro‑Economic Consistency Check")
+                st.markdown("""
+                - **USD Index** → usually negative (strong USD pressures crude lower)  
+                - **10Y Yield** → often negative (tighter financial conditions)  
+                - **VIX** → typically negative (risk‑off reduces demand expectations)  
+                - **Equity indices** → usually positive (risk‑on supports crude)  
+                """)
+
+        # ---------------------------------------------------------
+        # ROLLING BETA (MACRO CHANGES → FUTURE RETURNS)
+        # ---------------------------------------------------------
         st.subheader("Rolling Single-Factor Beta vs WTI")
 
         selected_macro_rb = st.selectbox(
@@ -1171,19 +1207,30 @@ with tab_regressions:
         window_rb = st.slider("Rolling window (days)", 60, 504, 252)
         horizon_rb = st.slider("Horizon (days)", 1, 60, 5, key="rolling_horizon_slider")
 
-        series_rb = macro_df[selected_macro_rb].dropna()
-        aligned_rb = pd.concat([series_rb, energy], axis=1).dropna()
-        aligned_rb.columns = [selected_macro_rb, "WTI"]
+        # Prepare macro changes
+        macro_chg_rb = macro_df[selected_macro_rb].pct_change()
+        wti_ret_rb = energy.pct_change()
 
-        if aligned_rb.empty:
+        df_rb = pd.concat([macro_chg_rb, wti_ret_rb], axis=1).dropna()
+        df_rb.columns = ["macro_chg", "wti_ret"]
+        df_rb["future_ret"] = df_rb["wti_ret"].shift(-horizon_rb)
+        df_rb = df_rb.dropna()
+
+        if df_rb.empty:
             st.info("Not enough overlapping data.")
         else:
-            beta_series = run_rolling_regression(
-                aligned_rb[selected_macro_rb],
-                aligned_rb["WTI"],
-                window=window_rb,
-                horizon=horizon_rb
-            )
+            betas = []
+            idx = []
+
+            for i in range(window_rb, len(df_rb)):
+                window_df = df_rb.iloc[i-window_rb:i]
+                X = sm.add_constant(window_df["macro_chg"])
+                y = window_df["future_ret"]
+                model = sm.OLS(y, X).fit()
+                betas.append(model.params["macro_chg"])
+                idx.append(df_rb.index[i])
+
+            beta_series = pd.Series(betas, index=idx, name="Rolling Beta")
 
             if beta_series.empty:
                 st.info("Not enough data to compute rolling betas.")
@@ -1196,3 +1243,27 @@ with tab_regressions:
                 fig_beta.add_hline(y=0, line_width=1, line_color="black")
                 fig_beta.update_layout(hovermode="x unified")
                 st.plotly_chart(fig_beta, use_container_width=True)
+
+                # ---------------------------------------------------------
+                # EXPLAINABILITY FOR ROLLING BETA
+                # ---------------------------------------------------------
+                st.subheader("Rolling Beta Interpretation")
+
+                latest_beta = beta_series.iloc[-1]
+
+                st.markdown(f"**Latest beta:** {latest_beta:.3f}")
+
+                if latest_beta > 0:
+                    st.markdown(
+                        f"- When **{selected_macro_rb}** rises, WTI tends to rise (positive sensitivity)."
+                    )
+                else:
+                    st.markdown(
+                        f"- When **{selected_macro_rb}** rises, WTI tends to fall (negative sensitivity)."
+                    )
+
+                st.markdown("""
+                - Rising beta → macro factor is becoming more influential  
+                - Falling beta → macro factor influence is weakening  
+                - Beta crossing zero → regime shift in macro–crude relationship  
+                """)
