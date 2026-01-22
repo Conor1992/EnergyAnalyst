@@ -851,60 +851,86 @@ with tab_arimax:
         selected_macros_arimax = st.multiselect(
             "Macro variables to include as exogenous:",
             macro_list,
-            default=macro_list[:3], key="arimax_macro_select"
+            default=macro_list[:3],
+            key="arimax_macro_select"
         )
 
         if not selected_macros_arimax:
             st.info("Select at least one macro variable to run ARIMAX.")
         else:
-            exog_df = macro_df[selected_macros_arimax]
+            exog = macro_df[selected_macros_arimax].dropna(how="all")
+            # Align macro exogenous with price
+            aligned = exog.join(price_series.rename("Price"), how="inner").dropna()
 
-            st.subheader("ARIMA Parameters (p, d, q)")
-            col_p, col_d, col_q = st.columns(3)
-            with col_p:
-                p = st.number_input("p (AR order)", min_value=0, max_value=5, value=1, step=1)
-            with col_d:
-                d = st.number_input("d (diff order)", min_value=0, max_value=2, value=1, step=1)
-            with col_q:
-                q = st.number_input("q (MA order)", min_value=0, max_value=5, value=1, step=1)
+            if aligned.empty:
+                st.info("No overlapping data between selected macro series and price.")
+            else:
+                price_aligned = aligned["Price"]
+                exog_aligned = aligned.drop(columns=["Price"])
 
-            steps = st.slider("Forecast horizon (days)", 5, 60, 20)
+                steps = st.slider("Forecast horizon (days)", 5, 60, 20)
+                order_p = st.number_input("AR order (p)", 0, 5, 1)
+                order_d = st.number_input("Differencing (d)", 0, 2, 1)
+                order_q = st.number_input("MA order (q)", 0, 5, 1)
 
-            if st.button("Run ARIMAX"):
-                with st.spinner("Fitting ARIMAX model..."):
-                    fc_mean, conf = fit_arimax(price_series, exog_df, order=(p, d, q), steps=steps)
+                if st.button("Run ARIMAX"):
+                    with st.spinner("Fitting ARIMAX model..."):
+                        fc_mean, conf = fit_arimax(
+                            price_aligned,
+                            exog_aligned,
+                            order=(order_p, order_d, order_q),
+                            steps=steps
+                        )
 
-                if fc_mean is None:
-                    st.info("Not enough data or alignment issues to fit ARIMAX.")
-                else:
-                    fc_index = pd.date_range(start=price_series.index[-1] + pd.Timedelta(days=1), periods=steps, freq="B")
-                    fc_series = pd.Series(fc_mean.values, index=fc_index, name="Forecast")
-                    conf_df = conf.copy()
-                    conf_df.index = fc_index
+                    if fc_mean is None:
+                        st.info("Not enough data to fit ARIMAX with the chosen settings.")
+                    else:
+                        st.subheader("ARIMAX Forecast")
 
-                    hist_df = price_series.rename("Price")
-                    fig_arima = px.line(hist_df, title="ARIMAX Forecast")
-                    fig_arima.add_scatter(x=fc_series.index, y=fc_series.values, mode="lines", name="Forecast")
-                    fig_arima.add_scatter(
-                        x=conf_df.index, y=conf_df.iloc[:,0], mode="lines",
-                        line=dict(dash="dash", color="gray"), name="Lower CI"
-                    )
-                    fig_arima.add_scatter(
-                        x=conf_df.index, y=conf_df.iloc[:,1], mode="lines",
-                        line=dict(dash="dash", color="gray"), name="Upper CI"
-                    )
-                    fig_arima.update_layout(hovermode="x unified")
-                    st.plotly_chart(fig_arima, use_container_width=True)
+                        fc_index = pd.date_range(
+                            start=price_aligned.index[-1] + pd.Timedelta(days=1),
+                            periods=steps,
+                            freq="B"
+                        )
+                        fc_series = pd.Series(fc_mean.values, index=fc_index, name="Forecast")
+
+                        # ✅ FIX: ensure we treat price as a Series, then to_frame()
+                        hist_df = price_aligned.rename("Price").to_frame()
+                        fc_df = fc_series.to_frame()
+
+                        fig_fc = px.line(hist_df, title="Price History & ARIMAX Forecast")
+                        fig_fc.add_scatter(
+                            x=fc_df.index,
+                            y=fc_df["Forecast"],
+                            mode="lines",
+                            name="Forecast"
+                        )
+
+                        if conf is not None:
+                            conf = conf.rename(columns={conf.columns[0]: "lower", conf.columns[1]: "upper"})
+                            conf.index = fc_index
+                            fig_fc.add_scatter(
+                                x=conf.index, y=conf["lower"],
+                                mode="lines", line=dict(width=0), showlegend=False
+                            )
+                            fig_fc.add_scatter(
+                                x=conf.index, y=conf["upper"],
+                                mode="lines", line=dict(width=0), fill="tonexty",
+                                name="Confidence Interval", opacity=0.2
+                            )
+
+                        fig_fc.update_layout(hovermode="x unified")
+                        st.plotly_chart(fig_fc, use_container_width=True)
 
 # ---------------------------------------------------------
-# 14. GARCH-X TAB (USER-SELECTED MACROS, p-o-q)
+# 14. GARCH‑X TAB
 # ---------------------------------------------------------
 
 with tab_garchx:
-    st.title("GARCH‑X Volatility Modeling (Returns with Macro Exogenous)")
+    st.title("GARCH‑X Volatility Modeling")
 
     if not ARCH_AVAILABLE:
-        st.warning("The 'arch' library is not installed. Install it with 'pip install arch' to use GARCH‑X.")
+        st.warning("The 'arch' package is not installed. Install it to use GARCH‑X.")
     else:
         macro_df = st.session_state.get("macro_df", pd.DataFrame())
         if macro_df.empty:
@@ -924,100 +950,117 @@ with tab_garchx:
             selected_macros_garch = st.multiselect(
                 "Macro variables to include as exogenous:",
                 macro_list,
-                default=macro_list[:3], key = "garch_macro_select"
+                default=macro_list[:3],
+                key="garch_macro_select"
             )
 
             if not selected_macros_garch:
                 st.info("Select at least one macro variable to run GARCH‑X.")
             else:
-                exog_df = macro_df[selected_macros_garch]
+                exog = macro_df[selected_macros_garch].dropna(how="all")
+                aligned = exog.join(returns.rename("ret"), how="inner").dropna()
 
-                st.subheader("GARCH Parameters (p, o, q)")
-                col_p, col_o, col_q = st.columns(3)
-                with col_p:
-                    p_g = st.number_input("p (ARCH order)", min_value=0, max_value=5, value=1, step=1)
-                with col_o:
-                    o_g = st.number_input("o (asymmetry)", min_value=0, max_value=5, value=0, step=1)
-                with col_q:
-                    q_g = st.number_input("q (GARCH order)", min_value=0, max_value=5, value=1, step=1)
+                if aligned.empty:
+                    st.info("No overlapping data between selected macro series and returns.")
+                else:
+                    ret_aligned = aligned["ret"]
+                    exog_aligned = aligned.drop(columns=["ret"])
 
-                dist = st.selectbox("Distribution", ["normal", "t", "skewt"], index=0)
-                steps_g = st.slider("Volatility forecast horizon (days)", 5, 60, 20)
+                    steps = st.slider("Volatility forecast horizon (days)", 5, 60, 20)
 
-                if st.button("Run GARCH‑X"):
-                    with st.spinner("Fitting GARCH‑X model..."):
-                        vol_fc, res_garch = fit_garch_x(returns, exog_df, p=p_g, o=o_g, q=q_g, dist=dist, steps=steps_g)
+                    if st.button("Run GARCH‑X"):
+                        with st.spinner("Fitting GARCH‑X model..."):
+                            vol_fc, res = fit_garch_x(ret_aligned, exog_aligned, steps=steps)
 
-                    if vol_fc is None:
-                        st.info("Not enough data or alignment issues to fit GARCH‑X.")
-                    else:
-                        fc_index = pd.date_range(start=returns.index[-1] + pd.Timedelta(days=1), periods=steps_g, freq="B")
-                        vol_series = pd.Series(vol_fc, index=fc_index, name="Forecast Volatility")
+                        if vol_fc is None:
+                            st.info("Not enough data to fit GARCH‑X with the chosen settings.")
+                        else:
+                            st.subheader("GARCH‑X Volatility Forecast")
+                            fc_index = pd.date_range(
+                                start=ret_aligned.index[-1] + pd.Timedelta(days=1),
+                                periods=steps,
+                                freq="B"
+                            )
+                            vol_series = pd.Series(vol_fc, index=fc_index, name="Forecast Volatility")
 
-                        st.subheader("Forecast Volatility (Annualized Approx.)")
-                        fig_vol = px.line(vol_series * np.sqrt(252), title="GARCH‑X Volatility Forecast (Annualized)")
-                        fig_vol.update_layout(hovermode="x unified")
-                        st.plotly_chart(fig_vol, use_container_width=True)
-
-                        st.subheader("Last In-Sample Conditional Volatility")
-                        cond_vol = res_garch.conditional_volatility
-                        fig_cv = px.line(cond_vol, title="In-Sample Conditional Volatility")
-                        fig_cv.update_layout(hovermode="x unified")
-                        st.plotly_chart(fig_cv, use_container_width=True)
+                            fig_vol = px.line(
+                                vol_series,
+                                title="Forecast Volatility (GARCH‑X)",
+                                labels={"value": "Volatility", "index": "Date"}
+                            )
+                            fig_vol.update_layout(hovermode="x unified")
+                            st.plotly_chart(fig_vol, use_container_width=True)
 
 # ---------------------------------------------------------
-# 15. REGRESSIONS TAB (MULTI-FACTOR & ROLLING)
+# 15. REGRESSIONS TAB (MULTIFACTOR & ROLLING BETA)
 # ---------------------------------------------------------
 
 with tab_regressions:
-    st.title("Advanced Regression Analysis")
+    st.title("Multifactor & Rolling Regression")
 
     macro_df = st.session_state.get("macro_df", pd.DataFrame())
     if macro_df.empty:
         st.warning("No macro data available. Go to the 'Macro Data' tab, enter your FRED API key, and load data.")
     else:
+        st.subheader("Multifactor Regression vs WTI")
+
         energy = yf.download(
             ["CL=F"],
             start="1990-01-01",
             auto_adjust=True,
             progress=False
         )["Close"]
-        wti = energy["CL=F"].rename("WTI").dropna()
+        energy.name = "WTI"
 
-        st.subheader("Multi-Factor Regression (User-Selected Macro Basket → Future WTI Returns)")
         macro_list = list(macro_df.columns)
-        selected_macros_mf = st.multiselect(
-            "Select macro variables for multi-factor regression:",
+        selected_macros_multi = st.multiselect(
+            "Select macro variables for multifactor regression:",
             macro_list,
-            default=macro_list[:4]
+            key="multi_macro_select"
         )
-        horizon = st.selectbox("Horizon (days)", [5, 21, 63], index=1)
-        if selected_macros_mf:
-            model = run_multifactor_regression(macro_df, wti, selected_macros_mf, horizon=horizon)
+
+        horizon_multi = st.slider("Horizon (days) for future returns", 1, 60, 5)
+
+        if selected_macros_multi:
+            model = run_multifactor_regression(macro_df, energy, selected_macros_multi, horizon=horizon_multi)
             if model is None:
-                st.info("Not enough data to run multi-factor regression.")
+                st.info("Not enough overlapping data to run multifactor regression.")
             else:
-                st.markdown(f"**R-squared:** {model.rsquared:.3f}")
-                coef_df = model.params.to_frame("Coefficient")
-                coef_df["p-value"] = model.pvalues
-                st.dataframe(coef_df.style.format({"Coefficient": "{:.4f}", "p-value": "{:.3f}"}))
-        else:
-            st.info("Select at least one macro variable for multi-factor regression.")
+                st.subheader("Regression Summary")
+                st.text(model.summary())
 
-        st.subheader("Rolling Regression (Single Macro → WTI Returns)")
-        selected_macro_roll = st.selectbox("Select macro variable for rolling regression:", macro_list)
-        window = st.slider("Rolling window (days)", 60, 504, 252)
-        horizon_roll = st.selectbox("Horizon (days) for rolling regression", [5, 21], index=0)
+        st.subheader("Rolling Single-Factor Beta vs WTI")
 
-        roll_series = run_rolling_regression(macro_df[selected_macro_roll], wti, window=window, horizon=horizon_roll)
-        if roll_series.empty:
-            st.info("Not enough data to compute rolling regression.")
+        selected_macro_rb = st.selectbox(
+            "Select macro variable for rolling regression:",
+            macro_list,
+            key="rolling_macro_select"
+        )
+
+        window_rb = st.slider("Rolling window (days)", 60, 504, 252)
+        horizon_rb = st.slider("Horizon (days) for future returns (rolling)", 1, 60, 5)
+
+        series_rb = macro_df[selected_macro_rb].dropna()
+        aligned_rb = pd.concat([series_rb, energy], axis=1).dropna()
+        aligned_rb.columns = [selected_macro_rb, "WTI"]
+
+        if aligned_rb.empty:
+            st.info("Not enough overlapping data for rolling regression.")
         else:
-            fig_roll = px.line(
-                roll_series,
-                title=f"Rolling {window}-Day Beta: {selected_macro_roll} → WTI ({horizon_roll}-day returns)",
-                labels={"value": "Beta", "index": "Date"}
+            beta_series = run_rolling_regression(
+                aligned_rb[selected_macro_rb],
+                aligned_rb["WTI"],
+                window=window_rb,
+                horizon=horizon_rb
             )
-            fig_roll.add_hline(y=0, line_width=1, line_color="black")
-            fig_roll.update_layout(hovermode="x unified")
-            st.plotly_chart(fig_roll, use_container_width=True)
+            if beta_series.empty:
+                st.info("Not enough data to compute rolling betas.")
+            else:
+                fig_beta = px.line(
+                    beta_series,
+                    title=f"Rolling {window_rb}-Day Beta of {selected_macro_rb} vs WTI (Horizon {horizon_rb} days)",
+                    labels={"value": "Beta", "index": "Date"}
+                )
+                fig_beta.add_hline(y=0, line_width=1, line_color="black")
+                fig_beta.update_layout(hovermode="x unified")
+                st.plotly_chart(fig_beta, use_container_width=True)
