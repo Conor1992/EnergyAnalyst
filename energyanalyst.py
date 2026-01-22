@@ -1085,7 +1085,7 @@ with tab_garchx:
                                 st.subheader("GARCH Parameter Snapshot")
                                 st.text(res.summary())
 
-# ---------------------------------------------------------
+## ---------------------------------------------------------
 # 15. REGRESSION ANALYSIS (CUSTOM OLS + ROLLING BETA)
 # ---------------------------------------------------------
 
@@ -1234,19 +1234,16 @@ with tab_regressions:
         macro_chg_rb = macro_df[selected_macro_rb].pct_change()
         if isinstance(macro_chg_rb, pd.DataFrame):
             macro_chg_rb = macro_chg_rb.squeeze()
+        macro_chg_rb = macro_chg_rb.rename("macro_chg")
 
+        # Prepare WTI returns (Series-safe)
         wti_ret_rb = energy.pct_change()
         if isinstance(wti_ret_rb, pd.DataFrame):
             wti_ret_rb = wti_ret_rb.squeeze()
+        wti_ret_rb = wti_ret_rb.rename("wti_ret")
 
         # Build DataFrame safely
-        df_rb = pd.concat(
-            [
-                macro_chg_rb.rename("macro_chg"),
-                wti_ret_rb.rename("wti_ret")
-            ],
-            axis=1
-        ).dropna()
+        df_rb = pd.concat([macro_chg_rb, wti_ret_rb], axis=1).dropna()
 
         df_rb["future_ret"] = df_rb["wti_ret"].shift(-horizon_rb)
         df_rb = df_rb.dropna()
@@ -1303,3 +1300,4 @@ with tab_regressions:
                 - Falling beta → macro factor influence is weakening  
                 - Beta crossing zero → regime shift in macro–crude relationship  
                 """)
+
