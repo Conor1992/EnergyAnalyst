@@ -1085,7 +1085,7 @@ with tab_garchx:
                                 st.subheader("GARCH Parameter Snapshot")
                                 st.text(res.summary())
 
-## ---------------------------------------------------------
+# ---------------------------------------------------------
 # 15. REGRESSION ANALYSIS (CUSTOM OLS + ROLLING BETA)
 # ---------------------------------------------------------
 
@@ -1102,7 +1102,6 @@ with tab_regressions:
         # =========================================================
         st.header("Custom OLS Regression (Price Levels vs Macro Levels)")
 
-        # Helper function
         def run_ols_regression_streamlit(price_series, macro_df, price_col="Price"):
             df = pd.concat([price_series.rename(price_col), macro_df], axis=1).dropna()
 
@@ -1111,17 +1110,13 @@ with tab_regressions:
                 return None
 
             y = df[price_col]
-            X = df.drop(columns=[price_col])
-            X = sm.add_constant(X)
+            X = sm.add_constant(df.drop(columns=[price_col]))
 
             model = sm.OLS(y, X).fit()
 
             st.subheader(f"OLS Regression Results — {price_col}")
             st.text(model.summary())
 
-            # ----------------------------
-            # INTERPRETATION LAYER
-            # ----------------------------
             st.subheader("Interpretation")
 
             params = model.params
@@ -1130,50 +1125,27 @@ with tab_regressions:
 
             st.markdown("### 1. Coefficient Signs & Economic Meaning")
             for var, coef in params.items():
-                if var == "const":
-                    continue
-                direction = "positive" if coef > 0 else "negative"
-                st.markdown(f"- **{var}**: {direction} coefficient ({coef:.4f})")
+                if var != "const":
+                    direction = "positive" if coef > 0 else "negative"
+                    st.markdown(f"- **{var}**: {direction} coefficient ({coef:.4f})")
 
-            st.markdown("""
-            **Meaning:**  
-            - Positive coefficient → when this macro factor rises, crude tends to rise  
-            - Negative coefficient → when this macro factor rises, crude tends to fall  
-            """)
-
-            st.markdown("### 2. Statistical Significance (p-values)")
+            st.markdown("### 2. Statistical Significance")
             for var, pval in pvals.items():
-                if var == "const":
-                    continue
-                sig = "SIGNIFICANT" if pval < 0.05 else "not significant"
-                st.markdown(f"- **{var}**: p = {pval:.4f} → {sig}")
+                if var != "const":
+                    sig = "SIGNIFICANT" if pval < 0.05 else "not significant"
+                    st.markdown(f"- **{var}**: p = {pval:.4f} → {sig}")
 
-            st.markdown("""
-            **Meaning:**  
-            - Significant variables have real explanatory power  
-            - Non‑significant variables may not meaningfully drive crude prices  
-            """)
-
-            st.markdown("### 3. R-squared Interpretation")
-            st.markdown(f"- **R² = {r2:.3f}**")
-            st.markdown("""
-            - Shows how much of crude price variation is explained by macro factors  
-            - Typical R² for crude vs macro is **0.20–0.50** depending on regime  
-            """)
+            st.markdown(f"### 3. R² = {r2:.3f}")
 
             st.markdown("### 4. Economic Interpretation Summary")
             st.markdown("""
-            - USD Index: usually negative → stronger USD pressures crude lower  
-            - 10Y Yield: often negative → higher rates tighten financial conditions  
-            - VIX: typically negative → risk‑off reduces demand expectations  
-            - If coefficients match these signs → model is economically consistent  
+            - USD Index: usually negative  
+            - 10Y Yield: often negative  
+            - VIX: typically negative  
             """)
 
             return model
 
-        # ----------------------------
-        # USER INTERFACE FOR CUSTOM OLS
-        # ----------------------------
         st.subheader("Run Custom OLS Regression")
 
         ols_price_ticker = st.selectbox(
@@ -1192,19 +1164,15 @@ with tab_regressions:
             key="ols_macro_vars"
         )
 
-        # NEW: Lag slider
         lag_length = st.slider(
             "Lag macro variables by N days (0 = no lag)",
-            min_value=0,
-            max_value=60,
-            value=0,
+            0, 60, 0,
             key="ols_lag_slider"
         )
 
         if ols_macro_vars:
             macro_subset = macro_df[ols_macro_vars].dropna(how="all")
 
-            # Apply lag if selected
             if lag_length > 0:
                 macro_subset = macro_subset.shift(lag_length)
 
@@ -1230,17 +1198,30 @@ with tab_regressions:
         window_rb = st.slider("Rolling window (days)", 60, 504, 252)
         horizon_rb = st.slider("Horizon (days)", 1, 60, 5, key="rolling_horizon_slider")
 
-        # Prepare macro changes (Series-safe)
+        # --- SERIES-SAFE MACRO CHANGE ---
         macro_chg_rb = macro_df[selected_macro_rb].pct_change()
+
+        # Force to Series
         if isinstance(macro_chg_rb, pd.DataFrame):
             macro_chg_rb = macro_chg_rb.squeeze()
-        macro_chg_rb = macro_chg_rb.rename("macro_chg")
 
-        # Prepare WTI returns (Series-safe)
+        macro_chg_rb = pd.Series(
+            macro_chg_rb.values,
+            index=macro_chg_rb.index,
+            name="macro_chg"
+        )
+
+        # --- SERIES-SAFE WTI RETURNS ---
         wti_ret_rb = energy.pct_change()
+
         if isinstance(wti_ret_rb, pd.DataFrame):
             wti_ret_rb = wti_ret_rb.squeeze()
-        wti_ret_rb = wti_ret_rb.rename("wti_ret")
+
+        wti_ret_rb = pd.Series(
+            wti_ret_rb.values,
+            index=wti_ret_rb.index,
+            name="wti_ret"
+        )
 
         # Build DataFrame safely
         df_rb = pd.concat([macro_chg_rb, wti_ret_rb], axis=1).dropna()
@@ -1264,40 +1245,27 @@ with tab_regressions:
 
             beta_series = pd.Series(betas, index=idx, name="Rolling Beta")
 
-            if beta_series.empty:
-                st.info("Not enough data to compute rolling betas.")
+            fig_beta = px.line(
+                beta_series,
+                title=f"Rolling {window_rb}-Day Beta of {selected_macro_rb} vs WTI",
+                labels={"value": "Beta", "index": "Date"}
+            )
+            fig_beta.add_hline(y=0, line_width=1, line_color="black")
+            fig_beta.update_layout(hovermode="x unified")
+            st.plotly_chart(fig_beta, use_container_width=True)
+
+            st.subheader("Rolling Beta Interpretation")
+
+            latest_beta = beta_series.iloc[-1]
+
+            if latest_beta > 0:
+                st.markdown(f"**Latest beta:** {latest_beta:.3f} → When **{selected_macro_rb}** rises, WTI tends to rise.")
             else:
-                fig_beta = px.line(
-                    beta_series,
-                    title=f"Rolling {window_rb}-Day Beta of {selected_macro_rb} vs WTI",
-                    labels={"value": "Beta", "index": "Date"}
-                )
-                fig_beta.add_hline(y=0, line_width=1, line_color="black")
-                fig_beta.update_layout(hovermode="x unified")
-                st.plotly_chart(fig_beta, use_container_width=True)
+                st.markdown(f"**Latest beta:** {latest_beta:.3f} → When **{selected_macro_rb}** rises, WTI tends to fall.")
 
-                # ----------------------------
-                # EXPLAINABILITY FOR ROLLING BETA
-                # ----------------------------
-                st.subheader("Rolling Beta Interpretation")
-
-                latest_beta = beta_series.iloc[-1]
-
-                st.markdown(f"**Latest beta:** {latest_beta:.3f}")
-
-                if latest_beta > 0:
-                    st.markdown(
-                        f"- When **{selected_macro_rb}** rises, WTI tends to rise (positive sensitivity)."
-                    )
-                else:
-                    st.markdown(
-                        f"- When **{selected_macro_rb}** rises, WTI tends to fall (negative sensitivity)."
-                    )
-
-                st.markdown("""
-                **How to read the chart:**  
-                - Rising beta → macro factor is becoming more influential  
-                - Falling beta → macro factor influence is weakening  
-                - Beta crossing zero → regime shift in macro–crude relationship  
-                """)
-
+            st.markdown("""
+            **How to read the chart:**  
+            - Rising beta → macro factor is becoming more influential  
+            - Falling beta → macro factor influence is weakening  
+            - Beta crossing zero → regime shift in macro–crude relationship  
+            """)
