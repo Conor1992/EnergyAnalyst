@@ -1050,7 +1050,7 @@ with tab_garchx:
 
                             hist_vol = ret_aligned.rolling(21).std().dropna()
                             if not hist_vol.empty:
-                                combined = hist_vol.append(pd.Series([vol_series.iloc[0]], index=[fc_index[0]]))
+                                combined = pd.concat([ hist_vol, pd.Series([vol_series.iloc[0]], index=[fc_index[0]]) ])
                                 rank_pct = combined.rank(pct=True).iloc[-1] * 100
 
                                 st.markdown(
