@@ -1230,12 +1230,24 @@ with tab_regressions:
         window_rb = st.slider("Rolling window (days)", 60, 504, 252)
         horizon_rb = st.slider("Horizon (days)", 1, 60, 5, key="rolling_horizon_slider")
 
-        # Prepare macro changes
+        # Prepare macro changes (Series-safe)
         macro_chg_rb = macro_df[selected_macro_rb].pct_change()
-        wti_ret_rb = energy.pct_change()
+        if isinstance(macro_chg_rb, pd.DataFrame):
+            macro_chg_rb = macro_chg_rb.squeeze()
 
-        df_rb = pd.concat([macro_chg_rb, wti_ret_rb], axis=1).dropna()
-        df_rb.columns = ["macro_chg", "wti_ret"]
+        wti_ret_rb = energy.pct_change()
+        if isinstance(wti_ret_rb, pd.DataFrame):
+            wti_ret_rb = wti_ret_rb.squeeze()
+
+        # Build DataFrame safely
+        df_rb = pd.concat(
+            [
+                macro_chg_rb.rename("macro_chg"),
+                wti_ret_rb.rename("wti_ret")
+            ],
+            axis=1
+        ).dropna()
+
         df_rb["future_ret"] = df_rb["wti_ret"].shift(-horizon_rb)
         df_rb = df_rb.dropna()
 
